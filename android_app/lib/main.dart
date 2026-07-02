@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:speech_to_text/speech_to_text.dart' as stt;
@@ -12,9 +14,11 @@ const geminiModels = [
   "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"
 ];
 const systemPrompt =
-    "Sen - JARVIS, foydalanuvchining shaxsiy AI yordamchisi. Qisqa, aniq, iliq javob ber. "
-    "Foydalanuvchi qaysi tilda gapirsa (o'zbek, rus, ingliz) o'sha tilda javob ber. "
-    "Standart til - o'zbek.";
+    "Sen - JARVIS, foydalanuvchining shaxsiy AI yordamchisi. Qisqa, tabiiy, iliq javob ber "
+    "(1-3 gap, ovozda eshitiladi). Foydalanuvchi qaysi tilda gapirsa (o'zbek, rus, ingliz) "
+    "o'sha tilda javob ber. Standart til - o'zbek.";
+
+enum JState { idle, listening, thinking, speaking }
 
 class JarvisApp extends StatelessWidget {
   const JarvisApp({super.key});
@@ -23,46 +27,52 @@ class JarvisApp extends StatelessWidget {
         title: 'JARVIS',
         debugShowCheckedModeBanner: false,
         theme: ThemeData.dark().copyWith(
-          scaffoldBackgroundColor: const Color(0xFF0A0E14),
+          scaffoldBackgroundColor: const Color(0xFF05070D),
           colorScheme: const ColorScheme.dark(primary: Color(0xFF31C9FF)),
         ),
-        home: const ChatPage(),
+        home: const HomePage(),
       );
 }
 
-class Msg {
-  final String text;
-  final bool me;
-  Msg(this.text, this.me);
-}
-
-class ChatPage extends StatefulWidget {
-  const ChatPage({super.key});
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
   @override
-  State<ChatPage> createState() => _ChatPageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
-  final _msgs = <Msg>[];
-  final _ctrl = TextEditingController();
-  final _scroll = ScrollController();
+class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   final _stt = stt.SpeechToText();
   final _tts = FlutterTts();
-  bool _listening = false, _busy = false;
+  late final AnimationController _anim;
   String _key = "";
   final _history = <Map<String, dynamic>>[];
+  JState _state = JState.idle;
+  bool _handsFree = false;
+  bool _sttReady = false;
+  String _userText = "";
+  String _botText = "Salom! Men JARVIS. Sharni bosing yoki gapiring.";
 
   @override
   void initState() {
     super.initState();
+    _anim = AnimationController(vsync: this, duration: const Duration(seconds: 6))
+      ..repeat();
     _tts.setLanguage("uz-UZ");
+    _tts.setSpeechRate(0.5);
+    _tts.setCompletionHandler(() {
+      if (_handsFree) {
+        _startListening();
+      } else {
+        _set(JState.idle);
+      }
+    });
     _load();
   }
 
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
     _key = p.getString("gemini_key") ?? "";
-    setState(() {});
+    if (mounted) setState(() {});
     if (_key.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _settings());
     }
@@ -71,39 +81,85 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _saveKey(String k) async {
     final p = await SharedPreferences.getInstance();
     await p.setString("gemini_key", k);
-    setState(() => _key = k);
+    if (mounted) setState(() => _key = k);
   }
 
-  void _add(String t, bool me) {
-    setState(() => _msgs.add(Msg(t, me)));
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) {
-        _scroll.animateTo(_scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
-      }
-    });
+  void _set(JState s) {
+    if (mounted) setState(() => _state = s);
   }
 
-  Future<void> _send(String text) async {
-    text = text.trim();
-    if (text.isEmpty) return;
+  Future<void> _toggle() async {
     if (_key.isEmpty) {
       _settings();
       return;
     }
-    _ctrl.clear();
-    _add(text, true);
-    setState(() => _busy = true);
-    _history.add({"role": "user", "parts": [{"text": text}]});
-    try {
-      final reply = await _gemini();
-      _history.add({"role": "model", "parts": [{"text": reply}]});
-      _add(reply, false);
-      await _tts.speak(reply);
-    } catch (e) {
-      _add("[xato] $e", false);
+    if (_state == JState.idle) {
+      _handsFree = true;
+      await _startListening();
+    } else {
+      _handsFree = false;
+      await _stt.stop();
+      await _tts.stop();
+      _set(JState.idle);
     }
-    setState(() => _busy = false);
+  }
+
+  Future<void> _startListening() async {
+    if (!_sttReady) {
+      _sttReady = await _stt.initialize(onError: (e) {}, onStatus: (s) {});
+    }
+    if (!_sttReady) {
+      setState(() => _botText = "Mikrofonga ruxsat bering.");
+      _set(JState.idle);
+      return;
+    }
+    _set(JState.listening);
+    setState(() => _userText = "");
+    await _stt.listen(
+      localeId: "uz_UZ",
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 3),
+      onResult: (r) {
+        setState(() => _userText = r.recognizedWords);
+        if (r.finalResult) {
+          final t = r.recognizedWords.trim();
+          if (t.isNotEmpty) {
+            _handle(t);
+          } else if (_handsFree) {
+            _startListening();
+          }
+        }
+      },
+    );
+  }
+
+  String _stripWake(String t) {
+    final low = t.toLowerCase();
+    for (final w in ["hey jarvis", "hey jarvist", "jarvis", "jarvist", "javis"]) {
+      if (low.startsWith(w)) return t.substring(w.length).trim();
+    }
+    return t;
+  }
+
+  Future<void> _handle(String raw) async {
+    final text = _stripWake(raw);
+    if (text.isEmpty) {
+      if (_handsFree) _startListening();
+      return;
+    }
+    setState(() => _userText = text);
+    _set(JState.thinking);
+    _history.add({"role": "user", "parts": [{"text": text}]});
+    String reply;
+    try {
+      reply = await _gemini();
+    } catch (e) {
+      reply = "Kechirasiz, xato: $e";
+    }
+    _history.add({"role": "model", "parts": [{"text": reply}]});
+    setState(() => _botText = reply);
+    _set(JState.speaking);
+    await _tts.speak(reply);
   }
 
   Future<String> _gemini() async {
@@ -135,29 +191,6 @@ class _ChatPageState extends State<ChatPage> {
     throw Exception(lastErr ?? "model topilmadi");
   }
 
-  Future<void> _mic() async {
-    if (_listening) {
-      _stt.stop();
-      setState(() => _listening = false);
-      return;
-    }
-    final ok = await _stt.initialize();
-    if (!ok) {
-      _add("Mikrofon ishlamadi (ruxsat bering).", false);
-      return;
-    }
-    setState(() => _listening = true);
-    _stt.listen(
-      localeId: "uz_UZ",
-      onResult: (res) {
-        if (res.finalResult) {
-          setState(() => _listening = false);
-          _send(res.recognizedWords);
-        }
-      },
-    );
-  }
-
   void _settings() {
     final kc = TextEditingController(text: _key);
     showDialog(
@@ -184,74 +217,191 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  String get _statusLabel {
+    switch (_state) {
+      case JState.listening:
+        return "Tinglayapman...";
+      case JState.thinking:
+        return "O'ylayapman...";
+      case JState.speaking:
+        return "Gapiryapman...";
+      default:
+        return "Tayyor";
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(
-          backgroundColor: const Color(0xFF111826),
-          title: const Text("JARVIS", style: TextStyle(letterSpacing: 3)),
-          actions: [
-            IconButton(onPressed: _settings, icon: const Icon(Icons.settings))
-          ],
-        ),
-        body: Column(children: [
-          Expanded(
-            child: ListView.builder(
-              controller: _scroll,
-              padding: const EdgeInsets.all(14),
-              itemCount: _msgs.length,
-              itemBuilder: (c, i) {
-                final m = _msgs[i];
-                return Align(
-                  alignment: m.me ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 5),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    constraints: BoxConstraints(
-                        maxWidth: MediaQuery.of(c).size.width * 0.8),
-                    decoration: BoxDecoration(
-                      color: m.me
-                          ? const Color(0xFF31C9FF)
-                          : const Color(0xFF111826),
-                      borderRadius: BorderRadius.circular(14),
+  void dispose() {
+    _anim.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: AnimatedBuilder(
+          animation: _anim,
+          builder: (context, _) {
+            return Stack(
+              children: [
+                if (_state == JState.thinking || _state == JState.speaking)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: EdgeGlowPainter(_anim.value, _state),
+                      ),
                     ),
-                    child: Text(m.text,
-                        style: TextStyle(
-                            color: m.me
-                                ? const Color(0xFF04121B)
-                                : Colors.white)),
                   ),
-                );
-              },
-            ),
-          ),
-          if (_busy) const LinearProgressIndicator(minHeight: 2),
-          Container(
-            padding: const EdgeInsets.all(10),
-            color: const Color(0xFF0D1420),
-            child: Row(children: [
-              IconButton(
-                onPressed: _mic,
-                icon: Icon(_listening ? Icons.mic : Icons.mic_none,
-                    color: _listening
-                        ? const Color(0xFF31C9FF)
-                        : Colors.white70),
-              ),
-              Expanded(
-                child: TextField(
-                  controller: _ctrl,
-                  onSubmitted: _send,
-                  decoration: const InputDecoration(
-                      hintText: "Xabar yozing yoki mikrofon...",
-                      border: InputBorder.none),
+                Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          const Text("J A R V I S",
+                              style: TextStyle(
+                                  fontSize: 18,
+                                  letterSpacing: 4,
+                                  fontWeight: FontWeight.w600)),
+                          const Spacer(),
+                          IconButton(
+                              onPressed: _settings,
+                              icon: const Icon(Icons.settings,
+                                  color: Colors.white70)),
+                        ],
+                      ),
+                    ),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: _toggle,
+                      child: SizedBox(
+                        width: 260,
+                        height: 260,
+                        child: CustomPaint(
+                          painter: OrbPainter(_anim.value, _state),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    Text(_statusLabel,
+                        style: const TextStyle(
+                            color: Color(0xFF31C9FF),
+                            fontSize: 15,
+                            letterSpacing: 1)),
+                    const Spacer(),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 22, vertical: 10),
+                      child: Column(
+                        children: [
+                          if (_userText.isNotEmpty)
+                            Text("Siz: $_userText",
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(color: Colors.white54)),
+                          const SizedBox(height: 8),
+                          Text(_botText,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 16)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                  ],
                 ),
-              ),
-              IconButton(
-                onPressed: () => _send(_ctrl.text),
-                icon: const Icon(Icons.send, color: Color(0xFF31C9FF)),
-              ),
-            ]),
-          ),
-        ]),
-      );
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class OrbPainter extends CustomPainter {
+  final double t;
+  final JState state;
+  OrbPainter(this.t, this.state);
+
+  Color get _c {
+    switch (state) {
+      case JState.thinking:
+        return const Color(0xFF7B5CFF);
+      case JState.speaking:
+        return const Color(0xFF2BF5C0);
+      case JState.listening:
+        return const Color(0xFF31C9FF);
+      default:
+        return const Color(0xFF2E7BFF);
+    }
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final baseR = size.shortestSide * 0.26;
+    final c = _c;
+    final active = state != JState.idle;
+    final speed = state == JState.thinking ? 2.4 : (active ? 1.4 : 0.7);
+
+    final glow = Paint()
+      ..shader = RadialGradient(colors: [
+        c.withOpacity(0.45),
+        c.withOpacity(0.0),
+      ]).createShader(Rect.fromCircle(center: center, radius: baseR * 2.4));
+    canvas.drawCircle(center, baseR * 2.4, glow);
+
+    final pulse = 1 + 0.07 * sin(t * 2 * pi * (active ? 2 : 1));
+    final core = Paint()
+      ..shader = RadialGradient(colors: [Colors.white, c]).createShader(
+          Rect.fromCircle(center: center, radius: baseR * pulse));
+    canvas.drawCircle(center, baseR * pulse, core);
+
+    final pp = Paint()..color = c.withOpacity(0.9);
+    const n = 46;
+    for (int i = 0; i < n; i++) {
+      final ang = (i / n) * 2 * pi + t * 2 * pi * speed;
+      final wobble = sin(t * 2 * pi * 3 + i * 0.7);
+      final rr = baseR * 1.35 + baseR * 0.55 * wobble;
+      final p = center +
+          Offset(cos(ang) * rr, sin(ang) * rr * 0.62);
+      canvas.drawCircle(p, 1.6 + 1.2 * (0.5 + 0.5 * wobble), pp);
+    }
+
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = Colors.white.withOpacity(0.25);
+    canvas.drawCircle(center, baseR * 1.15, ring);
+  }
+
+  @override
+  bool shouldRepaint(OrbPainter o) => o.t != t || o.state != state;
+}
+
+class EdgeGlowPainter extends CustomPainter {
+  final double t;
+  final JState state;
+  EdgeGlowPainter(this.t, this.state);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = state == JState.thinking
+        ? const Color(0xFF7B5CFF)
+        : const Color(0xFF2BF5C0);
+    final glow = 0.35 + 0.35 * (0.5 + 0.5 * sin(t * 2 * pi * 2));
+    final rect = Offset.zero & size;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 6
+      ..color = c.withOpacity(glow)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(rect.deflate(4), const Radius.circular(18)),
+        paint);
+  }
+
+  @override
+  bool shouldRepaint(EdgeGlowPainter o) => o.t != t || o.state != state;
 }
