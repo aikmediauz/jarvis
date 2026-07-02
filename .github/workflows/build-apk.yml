@@ -27,6 +27,8 @@ jobs:
       - name: Get packages
         working-directory: android_app
         run: flutter pub get
+      - name: Patch legacy jcenter in plugins
+        run: find ~/.pub-cache -name '*.gradle' -exec sed -i 's/jcenter()/mavenCentral()/g' {} + || true
       - name: Build debug APK
         working-directory: android_app
         run: flutter build apk --debug
@@ -34,4 +36,3 @@ jobs:
         with:
           name: JARVIS-apk
           path: android_app/build/app/outputs/flutter-apk/app-debug.apk
-
