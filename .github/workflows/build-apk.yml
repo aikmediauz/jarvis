@@ -29,6 +29,19 @@ jobs:
         run: flutter pub get
       - name: Patch legacy jcenter in plugins
         run: find ~/.pub-cache -name '*.gradle' -exec sed -i 's/jcenter()/mavenCentral()/g' {} + || true
+      - name: Fix plugin namespaces (AGP 8)
+        run: |
+          find ~/.pub-cache -type f -path '*/android/build.gradle' | while read GRADLE; do
+            DIR=$(dirname "$GRADLE")
+            MANIFEST="$DIR/src/main/AndroidManifest.xml"
+            if [ -f "$MANIFEST" ] && ! grep -q "namespace" "$GRADLE"; then
+              PKG=$(grep -oP 'package="\K[^"]+' "$MANIFEST" | head -1)
+              if [ -n "$PKG" ]; then
+                sed -i "0,/android {/s//android {\n    namespace \"$PKG\"/" "$GRADLE"
+                sed -i "s/ package=\"$PKG\"//" "$MANIFEST"
+              fi
+            fi
+          done || true
       - name: Build debug APK
         working-directory: android_app
         run: flutter build apk --debug
