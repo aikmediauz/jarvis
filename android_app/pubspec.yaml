@@ -11,8 +11,5 @@ dependencies:
   speech_to_text: ^7.0.0
   flutter_tts: ^4.0.2
   shared_preferences: ^2.2.0
-  vosk_flutter: ^0.3.48
-  path_provider: ^2.1.2
-  archive: ^3.4.10
 flutter:
   uses-material-design: true
