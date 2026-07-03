@@ -46,6 +46,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   late final AnimationController _anim;
   String _key = "";
   String _ttsLang = "uz-UZ";
+  String _voiceName = "";
+  String _voiceLocale = "";
+  final _voices = <Map<String, String>>[];
   final _history = <Map<String, dynamic>>[];
   JState _state = JState.idle;
   bool _handsFree = false;
@@ -65,20 +68,55 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Future<void> _initTts() async {
     try {
       await _tts.awaitSpeakCompletion(true);
-      _ttsLang = "en-US";
-      for (final l in ["uz-UZ", "ru-RU", "en-US"]) {
-        try {
-          final ok = await _tts.isLanguageAvailable(l);
-          if (ok == true) {
-            _ttsLang = l;
-            break;
-          }
-        } catch (_) {}
+      final p = await SharedPreferences.getInstance();
+      _ttsLang = p.getString("tts_lang") ?? "";
+      _voiceName = p.getString("tts_voice_name") ?? "";
+      _voiceLocale = p.getString("tts_voice_locale") ?? "";
+      if (_ttsLang.isEmpty) {
+        _ttsLang = "en-US";
+        for (final l in ["uz-UZ", "ru-RU", "en-US"]) {
+          try {
+            if (await _tts.isLanguageAvailable(l) == true) {
+              _ttsLang = l;
+              break;
+            }
+          } catch (_) {}
+        }
       }
       await _tts.setLanguage(_ttsLang);
       await _tts.setSpeechRate(0.5);
       await _tts.setVolume(1.0);
       await _tts.setPitch(1.0);
+      try {
+        final vs = await _tts.getVoices;
+        _voices.clear();
+        for (final v in (vs as List)) {
+          _voices.add({
+            "name": (v["name"] ?? "").toString(),
+            "locale": (v["locale"] ?? "").toString(),
+          });
+        }
+      } catch (_) {}
+      if (_voiceName.isNotEmpty) {
+        try {
+          await _tts.setVoice({"name": _voiceName, "locale": _voiceLocale});
+        } catch (_) {}
+      } else {
+        final base = _ttsLang.split("-").first.toLowerCase();
+        for (final v in _voices) {
+          final n = v["name"]!.toLowerCase();
+          if (v["locale"]!.toLowerCase().startsWith(base) &&
+              n.contains("male") &&
+              !n.contains("female")) {
+            _voiceName = v["name"]!;
+            _voiceLocale = v["locale"]!;
+            try {
+              await _tts.setVoice({"name": _voiceName, "locale": _voiceLocale});
+            } catch (_) {}
+            break;
+          }
+        }
+      }
     } catch (_) {}
     _tts.setCompletionHandler(() {
       if (_handsFree) {
@@ -94,6 +132,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         _set(JState.idle);
       }
     });
+    if (mounted) setState(() {});
   }
 
   Future<void> _speak(String text) async {
@@ -107,12 +146,29 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
   }
 
+  Future<void> _selectVoice(String name, String locale) async {
+    setState(() {
+      _voiceName = name;
+      _voiceLocale = locale;
+    });
+    final p = await SharedPreferences.getInstance();
+    await p.setString("tts_voice_name", name);
+    await p.setString("tts_voice_locale", locale);
+    try {
+      await _tts.setVoice({"name": name, "locale": locale});
+    } catch (_) {}
+    await _speak("Salom, men JARVIS. Ovoz tanlandi.");
+  }
+
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
     _key = p.getString("gemini_key") ?? "";
     if (mounted) setState(() {});
     if (_key.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _settings());
+    } else {
+      _handsFree = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _startListening());
     }
   }
 
@@ -120,6 +176,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final p = await SharedPreferences.getInstance();
     await p.setString("gemini_key", k);
     if (mounted) setState(() => _key = k);
+    if (k.isNotEmpty) {
+      _handsFree = true;
+      _startListening();
+    }
   }
 
   void _set(JState s) {
@@ -143,8 +203,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _startListening() async {
+    if (_stt.isListening) return;
     if (!_sttReady) {
-      _sttReady = await _stt.initialize(onError: (e) {}, onStatus: (s) {});
+      _sttReady = await _stt.initialize(onError: (e) {
+        if (_handsFree) Future.delayed(const Duration(seconds: 1), _startListening);
+      }, onStatus: (s) {
+        if ((s == "done" || s == "notListening") &&
+            _handsFree &&
+            _state == JState.listening) {
+          Future.delayed(const Duration(milliseconds: 400), _startListening);
+        }
+      });
     }
     if (!_sttReady) {
       setState(() => _botText = "Mikrofonga ruxsat bering.");
@@ -156,15 +225,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     await _stt.listen(
       localeId: "uz_UZ",
       listenFor: const Duration(seconds: 30),
-      pauseFor: const Duration(seconds: 3),
+      pauseFor: const Duration(seconds: 4),
       onResult: (r) {
         setState(() => _userText = r.recognizedWords);
         if (r.finalResult) {
           final t = r.recognizedWords.trim();
           if (t.isNotEmpty) {
             _handle(t);
-          } else if (_handsFree) {
-            _startListening();
           }
         }
       },
@@ -229,6 +296,44 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     throw Exception(lastErr ?? "model topilmadi");
   }
 
+  void _voicePicker() {
+    final base = _ttsLang.split("-").first.toLowerCase();
+    final filtered =
+        _voices.where((v) => v["locale"]!.toLowerCase().startsWith(base)).toList();
+    final show = filtered.isEmpty ? _voices : filtered;
+    showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF111826),
+        title: const Text("Ovoz tanlash"),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: show.isEmpty
+              ? const Text("Ovozlar topilmadi. Telefon TTS sozlamasini tekshiring.")
+              : ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final v in show)
+                      ListTile(
+                        dense: true,
+                        title: Text(v["name"]!, style: const TextStyle(fontSize: 13)),
+                        subtitle: Text(v["locale"]!,
+                            style: const TextStyle(fontSize: 11, color: Colors.white38)),
+                        trailing: v["name"] == _voiceName
+                            ? const Icon(Icons.check, color: Color(0xFF31C9FF))
+                            : const Icon(Icons.volume_up, color: Colors.white24, size: 18),
+                        onTap: () => _selectVoice(v["name"]!, v["locale"]!),
+                      ),
+                  ],
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c), child: const Text("Yopish")),
+        ],
+      ),
+    );
+  }
+
   void _settings() {
     final kc = TextEditingController(text: _key);
     showDialog(
@@ -242,16 +347,27 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             decoration: const InputDecoration(
                 labelText: "Gemini API key", hintText: "AIza..."),
           ),
-          const SizedBox(height: 12),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: () => _speak("Salom, men JARVIS. Ovoz sinovi."),
-              icon: const Icon(Icons.volume_up),
-              label: const Text("Ovozni sinash"),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(
+              child: TextButton.icon(
+                onPressed: () => _speak("Salom, men JARVIS. Ovoz sinovi."),
+                icon: const Icon(Icons.volume_up),
+                label: const Text("Sinash"),
+              ),
             ),
-          ),
-          Text("TTS tili: $_ttsLang",
+            Expanded(
+              child: TextButton.icon(
+                onPressed: () {
+                  Navigator.pop(c);
+                  _voicePicker();
+                },
+                icon: const Icon(Icons.record_voice_over),
+                label: const Text("Ovoz tanlash"),
+              ),
+            ),
+          ]),
+          Text("Til: $_ttsLang",
               style: const TextStyle(color: Colors.white38, fontSize: 12)),
         ]),
         actions: [
@@ -271,7 +387,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   String get _statusLabel {
     switch (_state) {
       case JState.listening:
-        return "Tinglayapman...";
+        return "Tinglayapman... (\"Jarvis, ...\" deng)";
       case JState.thinking:
         return "O'ylayapman...";
       case JState.speaking:
@@ -338,7 +454,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     Text(_statusLabel,
                         style: const TextStyle(
                             color: Color(0xFF31C9FF),
-                            fontSize: 15,
+                            fontSize: 14,
                             letterSpacing: 1)),
                     const Spacer(),
                     Padding(
