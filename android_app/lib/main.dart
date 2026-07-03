@@ -45,6 +45,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   final _tts = FlutterTts();
   late final AnimationController _anim;
   String _key = "";
+  String _ttsLang = "uz-UZ";
   final _history = <Map<String, dynamic>>[];
   JState _state = JState.idle;
   bool _handsFree = false;
@@ -57,8 +58,28 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     super.initState();
     _anim = AnimationController(vsync: this, duration: const Duration(seconds: 6))
       ..repeat();
-    _tts.setLanguage("uz-UZ");
-    _tts.setSpeechRate(0.5);
+    _initTts();
+    _load();
+  }
+
+  Future<void> _initTts() async {
+    try {
+      await _tts.awaitSpeakCompletion(true);
+      _ttsLang = "en-US";
+      for (final l in ["uz-UZ", "ru-RU", "en-US"]) {
+        try {
+          final ok = await _tts.isLanguageAvailable(l);
+          if (ok == true) {
+            _ttsLang = l;
+            break;
+          }
+        } catch (_) {}
+      }
+      await _tts.setLanguage(_ttsLang);
+      await _tts.setSpeechRate(0.5);
+      await _tts.setVolume(1.0);
+      await _tts.setPitch(1.0);
+    } catch (_) {}
     _tts.setCompletionHandler(() {
       if (_handsFree) {
         _startListening();
@@ -66,7 +87,24 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         _set(JState.idle);
       }
     });
-    _load();
+    _tts.setErrorHandler((msg) {
+      if (_handsFree) {
+        _startListening();
+      } else {
+        _set(JState.idle);
+      }
+    });
+  }
+
+  Future<void> _speak(String text) async {
+    try {
+      await _tts.stop();
+      await _tts.setLanguage(_ttsLang);
+      await _tts.setVolume(1.0);
+      await _tts.speak(text);
+    } catch (_) {
+      if (_handsFree) _startListening();
+    }
   }
 
   Future<void> _load() async {
@@ -159,7 +197,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _history.add({"role": "model", "parts": [{"text": reply}]});
     setState(() => _botText = reply);
     _set(JState.speaking);
-    await _tts.speak(reply);
+    await _speak(reply);
   }
 
   Future<String> _gemini() async {
@@ -198,11 +236,24 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       builder: (c) => AlertDialog(
         backgroundColor: const Color(0xFF111826),
         title: const Text("Sozlamalar"),
-        content: TextField(
-          controller: kc,
-          decoration: const InputDecoration(
-              labelText: "Gemini API key", hintText: "AIza..."),
-        ),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            controller: kc,
+            decoration: const InputDecoration(
+                labelText: "Gemini API key", hintText: "AIza..."),
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => _speak("Salom, men JARVIS. Ovoz sinovi."),
+              icon: const Icon(Icons.volume_up),
+              label: const Text("Ovozni sinash"),
+            ),
+          ),
+          Text("TTS tili: $_ttsLang",
+              style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        ]),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c), child: const Text("Bekor")),
           ElevatedButton(
@@ -364,8 +415,7 @@ class OrbPainter extends CustomPainter {
       final ang = (i / n) * 2 * pi + t * 2 * pi * speed;
       final wobble = sin(t * 2 * pi * 3 + i * 0.7);
       final rr = baseR * 1.35 + baseR * 0.55 * wobble;
-      final p = center +
-          Offset(cos(ang) * rr, sin(ang) * rr * 0.62);
+      final p = center + Offset(cos(ang) * rr, sin(ang) * rr * 0.62);
       canvas.drawCircle(p, 1.6 + 1.2 * (0.5 + 0.5 * wobble), pp);
     }
 
