@@ -9,6 +9,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:local_auth/local_auth.dart';
 
 void main() => runApp(const JarvisApp());
 
@@ -69,6 +70,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool _handsFree = false;
   bool _sttReady = false;
   bool _cloudVoice = true;
+  bool _wakeMode = true;
+  bool _lockEnabled = false;
+  bool _unlocked = true;
+  final _auth = LocalAuthentication();
   String _userText = "";
   String _botText = "Salom! Men JARVIS. Sharni bosing yoki \"Jarvis\" deng.";
 
@@ -99,6 +104,36 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     } catch (_) {}
     _tts.setCompletionHandler(() => _afterSpeak());
     _tts.setErrorHandler((m) => _afterSpeak());
+  }
+
+  Future<void> _tryUnlock() async {
+    try {
+      final ok = await _auth.authenticate(
+        localizedReason: "JARVIS'ni ochish uchun tasdiqlang",
+        options: const AuthenticationOptions(
+            biometricOnly: false, stickyAuth: true),
+      );
+      if (ok) {
+        setState(() => _unlocked = true);
+        if (_key.isEmpty) {
+          _settings();
+        } else {
+          _handsFree = true;
+          _startListening();
+        }
+      }
+    } catch (e) {
+      setState(() => _botText = "Qulf ochilmadi. Qayta urining.");
+    }
+  }
+
+  bool _hasWake(String t) {
+    final l = t.toLowerCase();
+    return l.contains("jarvis") ||
+        l.contains("javis") ||
+        l.contains("jarvi") ||
+        l.contains("jervis") ||
+        l.contains("djarvis");
   }
 
   void _afterSpeak() {
@@ -205,7 +240,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _key = p.getString("gemini_key") ?? "";
     _voice = p.getString("tts_voice") ?? "Charon";
     _cloudVoice = p.getBool("cloud_voice") ?? true;
+    _wakeMode = p.getBool("wake_mode") ?? true;
+    _lockEnabled = p.getBool("lock_enabled") ?? false;
+    _unlocked = !_lockEnabled;
     if (mounted) setState(() {});
+    if (_lockEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _tryUnlock());
+      return;
+    }
     if (_key.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _settings());
     } else {
@@ -298,6 +340,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _handle(String raw) async {
+    if (_wakeMode && !_hasWake(raw)) {
+      if (_handsFree) _startListening();
+      return;
+    }
     final text = _stripWake(raw);
     if (text.isEmpty) {
       if (_handsFree) _startListening();
@@ -494,6 +540,37 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                 setD(() {});
               },
             ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: const Text("\"Jarvis\" bilan chaqirish", style: TextStyle(fontSize: 13)),
+              subtitle: const Text("Shovqinda faqat 'Jarvis...' ga javob beradi",
+                  style: TextStyle(fontSize: 11, color: Colors.white38)),
+              value: _wakeMode,
+              onChanged: (v) async {
+                final p = await SharedPreferences.getInstance();
+                await p.setBool("wake_mode", v);
+                setState(() => _wakeMode = v);
+                setD(() {});
+              },
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: const Text("Ilova qulfi (yuz/barmoq/parol)", style: TextStyle(fontSize: 13)),
+              subtitle: const Text("Ochilganda telefon qulfini so'raydi",
+                  style: TextStyle(fontSize: 11, color: Colors.white38)),
+              value: _lockEnabled,
+              onChanged: (v) async {
+                final p = await SharedPreferences.getInstance();
+                await p.setBool("lock_enabled", v);
+                setState(() {
+                  _lockEnabled = v;
+                  _unlocked = true;
+                });
+                setD(() {});
+              },
+            ),
             Row(children: [
               Expanded(
                 child: TextButton.icon(
@@ -551,6 +628,27 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   @override
   Widget build(BuildContext context) {
+    if (_lockEnabled && !_unlocked) {
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.lock, size: 64, color: Color(0xFF31C9FF)),
+              const SizedBox(height: 16),
+              const Text("JARVIS qulflangan",
+                  style: TextStyle(fontSize: 18, color: Colors.white)),
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                onPressed: _tryUnlock,
+                icon: const Icon(Icons.fingerprint),
+                label: const Text("Ochish"),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
     return Scaffold(
       body: SafeArea(
         child: AnimatedBuilder(
