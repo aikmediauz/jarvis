@@ -14,5 +14,6 @@ dependencies:
   url_launcher: ^6.2.5
   audioplayers: ^6.1.0
   local_auth: ^2.3.0
+  android_intent_plus: ^5.2.0
 flutter:
   uses-material-design: true
