@@ -275,9 +275,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _set(JState.listening);
     setState(() => _userText = "");
     await _stt.listen(
-      localeId: "uz_UZ",
-      listenFor: const Duration(seconds: 25),
-      pauseFor: const Duration(seconds: 4),
+      listenFor: const Duration(seconds: 30),
+      pauseFor: const Duration(seconds: 3),
       onResult: (r) {
         setState(() => _userText = r.recognizedWords);
         if (r.finalResult) {
@@ -598,6 +597,36 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     Text(_statusLabel,
                         style: const TextStyle(
                             color: Color(0xFF31C9FF), fontSize: 14, letterSpacing: 1)),
+                    const SizedBox(height: 14),
+                    GestureDetector(
+                      onTap: _toggle,
+                      child: Container(
+                        width: 62,
+                        height: 62,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _state == JState.idle
+                              ? const Color(0xFF1A2233)
+                              : const Color(0xFF17384A),
+                          border: Border.all(
+                            color: _state == JState.idle
+                                ? Colors.white24
+                                : const Color(0xFF2BF5C0),
+                            width: 2,
+                          ),
+                        ),
+                        child: Icon(
+                          _state == JState.idle ? Icons.mic_off : Icons.mic,
+                          size: 30,
+                          color: _state == JState.idle
+                              ? Colors.white54
+                              : const Color(0xFF2BF5C0),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(_state == JState.idle ? "Mikrofon o'chiq" : "Mikrofon yoniq",
+                        style: const TextStyle(color: Colors.white38, fontSize: 11)),
                     const Spacer(),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
