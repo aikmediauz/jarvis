@@ -10,6 +10,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() => runApp(const JarvisApp());
 
@@ -32,7 +34,11 @@ const systemPrompt =
     "YouTube uchun {\"action\":\"youtube\",\"query\":\"...\"} ; "
     "xarita uchun {\"action\":\"maps\",\"query\":\"joy\"} ; "
     "sayt/ilova ochish uchun {\"action\":\"open\",\"url\":\"https://...\"} ; "
-    "Telegram xabar uchun {\"action\":\"telegram\",\"message\":\"matn\"} (kim ekanini foydalanuvchi tanlaydi) yoki {\"action\":\"telegram\",\"username\":\"nomi\"} (shu chatni ochadi) . "
+    "Telegram xabar uchun {\"action\":\"telegram\",\"message\":\"matn\"} (kim ekanini foydalanuvchi tanlaydi) yoki {\"action\":\"telegram\",\"username\":\"nomi\"} (shu chatni ochadi) ; "
+    "budilnik uchun {\"action\":\"alarm\",\"hour\":7,\"minute\":30,\"message\":\"...\"} ; "
+    "taymer uchun {\"action\":\"timer\",\"seconds\":300,\"message\":\"...\"} ; "
+    "musiqa uchun {\"action\":\"music\",\"query\":\"qo'shiq yoki ijrochi\"} ; "
+    "kalendar/eslatma uchun {\"action\":\"calendar\",\"title\":\"...\"} . "
     "Agar amal kerak bo'lmasa, oddiy matn bilan javob ber (JSONsiz).";
 
 enum JState { idle, listening, thinking, speaking }
@@ -74,6 +80,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool _lockEnabled = false;
   bool _unlocked = true;
   final _auth = LocalAuthentication();
+  final _textCtl = TextEditingController();
   String _userText = "";
   String _botText = "Salom! Men JARVIS. Sharni bosing yoki \"Jarvis\" deng.";
 
@@ -281,25 +288,50 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     if (mounted) setState(() => _state = s);
   }
 
-  Future<void> _toggle() async {
+  Future<void> _micToggle() async {
     if (_key.isEmpty) {
       _settings();
       return;
     }
-    if (_state == JState.idle) {
-      _handsFree = true;
-      await _startListening();
-    } else {
+    if (_handsFree) {
       _handsFree = false;
       await _stt.stop();
       await _tts.stop();
       await _audio.stop();
       _set(JState.idle);
+    } else {
+      _handsFree = true;
+      await _startListening();
+    }
+  }
+
+  Future<void> _orbTap() async {
+    if (_key.isEmpty) {
+      _settings();
+      return;
+    }
+    if (_state != JState.idle) {
+      await _stt.stop();
+      await _tts.stop();
+      await _audio.stop();
+      _set(JState.idle);
+    } else {
+      await _startListening();
     }
   }
 
   Future<void> _startListening() async {
     if (_stt.isListening) return;
+    var mic = await Permission.microphone.status;
+    if (!mic.isGranted) {
+      mic = await Permission.microphone.request();
+    }
+    if (!mic.isGranted) {
+      setState(() => _botText =
+          "Mikrofonga ruxsat bering: Sozlamalar > Ilovalar > JARVIS > Ruxsatlar > Mikrofon. Yoki pastdan yozib buyruq bering.");
+      _set(JState.idle);
+      return;
+    }
     if (!_sttReady) {
       _sttReady = await _stt.initialize(onError: (e) {}, onStatus: (s) {
         if ((s == "done" || s == "notListening") &&
@@ -340,11 +372,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _handle(String raw) async {
-    if (_wakeMode && !_hasWake(raw)) {
-      if (_handsFree) _startListening();
+    if (_handsFree && _wakeMode && !_hasWake(raw)) {
+      _startListening();
       return;
     }
-    final text = _stripWake(raw);
+    _process(_stripWake(raw));
+  }
+
+  Future<void> _process(String text) async {
     if (text.isEmpty) {
       if (_handsFree) _startListening();
       return;
@@ -387,8 +422,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   Future<void> _doAction(Map<String, dynamic> a) async {
     final action = (a["action"] ?? "").toString();
     Uri? uri;
+    AndroidIntent? intent;
     String say = "Bajarildi.";
     String enc(dynamic v) => Uri.encodeComponent((v ?? "").toString());
+    int intOf(dynamic v, int d) {
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      return int.tryParse(v?.toString() ?? "") ?? d;
+    }
     switch (action) {
       case "call":
         uri = Uri.parse("tel:${a["number"]}");
@@ -428,17 +469,57 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           say = "Telegramni ochyapman.";
         }
         break;
+      case "alarm":
+        intent = AndroidIntent(
+          action: "android.intent.action.SET_ALARM",
+          arguments: <String, dynamic>{
+            "android.intent.extra.alarm.HOUR": intOf(a["hour"], 8),
+            "android.intent.extra.alarm.MINUTES": intOf(a["minute"], 0),
+            "android.intent.extra.alarm.MESSAGE": (a["message"] ?? "JARVIS").toString(),
+            "android.intent.extra.alarm.SKIP_UI": false,
+          },
+        );
+        say = "Budilnik qo'ydim.";
+        break;
+      case "timer":
+        intent = AndroidIntent(
+          action: "android.intent.action.SET_TIMER",
+          arguments: <String, dynamic>{
+            "android.intent.extra.alarm.LENGTH": intOf(a["seconds"], 60),
+            "android.intent.extra.alarm.MESSAGE": (a["message"] ?? "JARVIS").toString(),
+            "android.intent.extra.alarm.SKIP_UI": true,
+          },
+        );
+        say = "Taymer qo'ydim.";
+        break;
+      case "music":
+        intent = AndroidIntent(
+          action: "android.media.action.MEDIA_PLAY_FROM_SEARCH",
+          arguments: <String, dynamic>{"query": (a["query"] ?? "").toString()},
+        );
+        say = "Musiqa qo'yyapman.";
+        break;
+      case "calendar":
+        intent = AndroidIntent(
+          action: "android.intent.action.INSERT",
+          type: "vnd.android.cursor.item/event",
+          arguments: <String, dynamic>{"title": (a["title"] ?? "").toString()},
+        );
+        say = "Kalendarga qo'shyapman.";
+        break;
       default:
         say = (a["text"] ?? "Bajarildi.").toString();
     }
     setState(() => _botText = say);
-    if (uri != null) {
-      try {
+    try {
+      if (intent != null) {
+        await intent.launch();
+      } else if (uri != null) {
         await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } catch (e) {
-        say = "Ocholmadim: $e";
-        setState(() => _botText = say);
       }
+    } catch (e) {
+      say = "Bajarolmadim: $e";
+      setState(() => _botText = say);
     }
     _set(JState.speaking);
     await _speak(say);
@@ -623,6 +704,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void dispose() {
     _anim.dispose();
     _audio.dispose();
+    _textCtl.dispose();
     super.dispose();
   }
 
@@ -684,7 +766,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     ),
                     const Spacer(),
                     GestureDetector(
-                      onTap: _toggle,
+                      onTap: _orbTap,
                       child: SizedBox(
                         width: 260,
                         height: 260,
@@ -697,33 +779,33 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             color: Color(0xFF31C9FF), fontSize: 14, letterSpacing: 1)),
                     const SizedBox(height: 14),
                     GestureDetector(
-                      onTap: _toggle,
+                      onTap: _micToggle,
                       child: Container(
                         width: 62,
                         height: 62,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _state == JState.idle
+                          color: !_handsFree
                               ? const Color(0xFF1A2233)
                               : const Color(0xFF17384A),
                           border: Border.all(
-                            color: _state == JState.idle
+                            color: !_handsFree
                                 ? Colors.white24
                                 : const Color(0xFF2BF5C0),
                             width: 2,
                           ),
                         ),
                         child: Icon(
-                          _state == JState.idle ? Icons.mic_off : Icons.mic,
+                          !_handsFree ? Icons.mic_off : Icons.mic,
                           size: 30,
-                          color: _state == JState.idle
+                          color: !_handsFree
                               ? Colors.white54
                               : const Color(0xFF2BF5C0),
                         ),
                       ),
                     ),
                     const SizedBox(height: 6),
-                    Text(_state == JState.idle ? "Mikrofon o'chiq" : "Mikrofon yoniq",
+                    Text(!_handsFree ? "Mic o'chiq - sharni bosib gapiring" : "Mic yoniq - doim tinglaydi",
                         style: const TextStyle(color: Colors.white38, fontSize: 11)),
                     const Spacer(),
                     Padding(
@@ -741,7 +823,43 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         ],
                       ),
                     ),
-                    const SizedBox(height: 18),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+                      child: Row(children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _textCtl,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            decoration: InputDecoration(
+                              hintText: "Yozib ham buyruq bering...",
+                              hintStyle:
+                                  const TextStyle(color: Colors.white30, fontSize: 13),
+                              filled: true,
+                              fillColor: const Color(0xFF121A28),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 10),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(24),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                            onSubmitted: (t) {
+                              _textCtl.clear();
+                              if (t.trim().isNotEmpty) _process(t.trim());
+                            },
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () {
+                            final t = _textCtl.text.trim();
+                            _textCtl.clear();
+                            if (t.isNotEmpty) _process(t);
+                          },
+                          icon: const Icon(Icons.send, color: Color(0xFF31C9FF)),
+                        ),
+                      ]),
+                    ),
+                    const SizedBox(height: 12),
                   ],
                 ),
               ],
