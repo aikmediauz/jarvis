@@ -26,7 +26,7 @@ const maleVoices = [
 ];
 const systemPrompt =
     "Sen - JARVIS, foydalanuvchining shaxsiy AI yordamchisi. Qisqa, tabiiy, iliq javob ber. "
-    "Foydalanuvchi qaysi tilda gapirsa (o'zbek, rus, ingliz) o'sha tilda javob ber. Standart til - o'zbek. "
+    "HAR DOIM O'ZBEK TILIDA (lotin) qisqa va aniq javob ber. Faqat foydalanuvchi ochiq rus/ingliz tilida gapirsa, o'sha tilda. Ishonchsiz bo'lsang o'zbekda javob ber. "
     "Agar foydalanuvchi telefon amalini so'rasa, FAQAT bitta JSON qaytar (boshqa hech qanday matnsiz): "
     "qo'ng'iroq uchun {\"action\":\"call\",\"number\":\"+998...\"} ; "
     "SMS uchun {\"action\":\"sms\",\"number\":\"+998...\",\"message\":\"matn\"} ; "
@@ -76,9 +76,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool _handsFree = false;
   bool _sttReady = false;
   bool _cloudVoice = true;
-  bool _wakeMode = true;
+  bool _wakeMode = false;
   bool _lockEnabled = false;
   bool _unlocked = true;
+  String _lastWords = "";
+  bool _processed = false;
   final _auth = LocalAuthentication();
   final _textCtl = TextEditingController();
   String _userText = "";
@@ -247,7 +249,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _key = p.getString("gemini_key") ?? "";
     _voice = p.getString("tts_voice") ?? "Charon";
     _cloudVoice = p.getBool("cloud_voice") ?? true;
-    _wakeMode = p.getBool("wake_mode") ?? true;
+    _wakeMode = p.getBool("wake_mode") ?? false;
     _lockEnabled = p.getBool("lock_enabled") ?? false;
     _unlocked = !_lockEnabled;
     if (mounted) setState(() {});
@@ -334,10 +336,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
     if (!_sttReady) {
       _sttReady = await _stt.initialize(onError: (e) {}, onStatus: (s) {
-        if ((s == "done" || s == "notListening") &&
-            _handsFree &&
-            _state == JState.listening) {
-          Future.delayed(const Duration(milliseconds: 500), _startListening);
+        if (s == "done" || s == "notListening") {
+          if (!_processed && _lastWords.trim().isNotEmpty) {
+            _processed = true;
+            _handle(_lastWords.trim());
+          } else if (_handsFree && _state == JState.listening) {
+            Future.delayed(const Duration(milliseconds: 400), _startListening);
+          }
         }
       });
     }
@@ -348,16 +353,18 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
     _set(JState.listening);
     setState(() => _userText = "");
+    _processed = false;
+    _lastWords = "";
     await _stt.listen(
-      listenFor: const Duration(seconds: 30),
-      pauseFor: const Duration(seconds: 3),
+      listenFor: const Duration(seconds: 8),
+      pauseFor: const Duration(seconds: 2),
       onResult: (r) {
+        _lastWords = r.recognizedWords;
         setState(() => _userText = r.recognizedWords);
-        if (r.finalResult) {
+        if (r.finalResult && !_processed) {
+          _processed = true;
           final t = r.recognizedWords.trim();
-          if (t.isNotEmpty) {
-            _handle(t);
-          }
+          if (t.isNotEmpty) _handle(t);
         }
       },
     );
