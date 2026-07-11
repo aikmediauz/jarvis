@@ -435,7 +435,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _recPath = "${dir.path}/cmd.wav";
       await _rec.start(
         const RecordConfig(
-            encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1),
+            encoder: AudioEncoder.pcm16bits,
+            sampleRate: 16000,
+            numChannels: 1),
         path: _recPath!,
       );
       _recording = true;
@@ -460,13 +462,15 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
     _set(JState.thinking);
     try {
-      final bytes = await File(path).readAsBytes();
-      if (bytes.length < 2500) {
+      final pcm = await File(path).readAsBytes();
+      if (pcm.length < 3000) {
         _set(JState.idle);
-        setState(() => _botText = "Eshitmadim, biroz uzunroq gapiring.");
+        setState(() => _botText =
+            "Eshitmadim (yozildi: ${pcm.length} bayt). Mikrofonni bosib, biroz uzunroq gapiring.");
         return;
       }
-      final b64 = base64Encode(bytes);
+      final wav = _pcmToWav(pcm, 16000);
+      final b64 = base64Encode(wav);
       final audioTurn = <String, dynamic>{
         "role": "user",
         "parts": [
