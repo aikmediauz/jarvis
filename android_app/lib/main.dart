@@ -12,6 +12,9 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:record/record.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 
 void main() => runApp(const JarvisApp());
 
@@ -81,10 +84,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool _unlocked = true;
   String _lastWords = "";
   bool _processed = false;
+  final _rec = AudioRecorder();
+  bool _recording = false;
+  String? _recPath;
   final _auth = LocalAuthentication();
   final _textCtl = TextEditingController();
   String _userText = "";
-  String _botText = "Salom! Men JARVIS. Sharni bosing yoki \"Jarvis\" deng.";
+  String _botText = "Salom! Men JARVIS. Sharni bosib TURIB gapiring, qo'yvorsangiz bajaraman. Yoki pastdan yozing.";
 
   @override
   void initState() {
@@ -259,9 +265,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
     if (_key.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _settings());
-    } else {
-      _handsFree = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _startListening());
     }
   }
 
@@ -387,10 +390,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   Future<void> _process(String text) async {
-    if (text.isEmpty) {
-      if (_handsFree) _startListening();
-      return;
-    }
+    if (text.isEmpty) return;
     setState(() => _userText = text);
     _set(JState.thinking);
     _history.add({"role": "user", "parts": [{"text": text}]});
@@ -400,7 +400,18 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     } catch (e) {
       reply = "Kechirasiz, xato: $e";
     }
+    await _afterReply(reply);
+  }
+
+  void _trimHistory() {
+    while (_history.length > 8) {
+      _history.removeAt(0);
+    }
+  }
+
+  Future<void> _afterReply(String reply) async {
     _history.add({"role": "model", "parts": [{"text": reply}]});
+    _trimHistory();
     final act = _tryAction(reply);
     if (act != null) {
       await _doAction(act);
@@ -409,6 +420,103 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       _set(JState.speaking);
       await _speak(reply);
     }
+  }
+
+  Future<void> _startRec() async {
+    if (_recording || _state == JState.thinking) return;
+    try {
+      if (!await _rec.hasPermission()) {
+        setState(() => _botText = "Mikrofonga ruxsat bering.");
+        return;
+      }
+      await _tts.stop();
+      await _audio.stop();
+      final dir = await getTemporaryDirectory();
+      _recPath = "${dir.path}/cmd.wav";
+      await _rec.start(
+        const RecordConfig(
+            encoder: AudioEncoder.wav, sampleRate: 16000, numChannels: 1),
+        path: _recPath!,
+      );
+      _recording = true;
+      setState(() => _userText = "");
+      _set(JState.listening);
+    } catch (e) {
+      _recording = false;
+      setState(() => _botText = "Yozib bo'lmadi: $e");
+    }
+  }
+
+  Future<void> _stopRecAndSend() async {
+    if (!_recording) return;
+    _recording = false;
+    String? path;
+    try {
+      path = await _rec.stop();
+    } catch (_) {}
+    if (path == null) {
+      _set(JState.idle);
+      return;
+    }
+    _set(JState.thinking);
+    try {
+      final bytes = await File(path).readAsBytes();
+      if (bytes.length < 2500) {
+        _set(JState.idle);
+        setState(() => _botText = "Eshitmadim, biroz uzunroq gapiring.");
+        return;
+      }
+      final b64 = base64Encode(bytes);
+      final audioTurn = <String, dynamic>{
+        "role": "user",
+        "parts": [
+          {"inlineData": {"mimeType": "audio/wav", "data": b64}},
+          {"text": "(ovozli buyruq)"}
+        ]
+      };
+      String reply;
+      try {
+        reply = await _geminiAudio(audioTurn);
+      } catch (e) {
+        reply = "Kechirasiz, xato: $e";
+      }
+      _history.add(audioTurn);
+      _trimHistory();
+      await _afterReply(reply);
+    } catch (e) {
+      _set(JState.idle);
+      setState(() => _botText = "Xato: $e");
+    }
+  }
+
+  Future<String> _geminiAudio(Map<String, dynamic> audioTurn) async {
+    final contents = List<Map<String, dynamic>>.from(_history)..add(audioTurn);
+    Object? lastErr;
+    for (final m in geminiModels) {
+      final url = Uri.parse(
+          "https://generativelanguage.googleapis.com/v1beta/models/$m:generateContent?key=$_key");
+      final body = jsonEncode({
+        "system_instruction": {"parts": [{"text": systemPrompt}]},
+        "contents": contents,
+        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024}
+      });
+      final r = await http.post(url,
+          headers: {"Content-Type": "application/json"}, body: body);
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body);
+        final parts = j["candidates"]?[0]?["content"]?["parts"];
+        if (parts != null) {
+          final sb = StringBuffer();
+          for (final p in parts) {
+            if (p["text"] != null) sb.write(p["text"]);
+          }
+          return sb.toString().trim();
+        }
+        return "(bo'sh javob)";
+      }
+      lastErr = "HTTP ${r.statusCode}";
+    }
+    throw Exception(lastErr ?? "model topilmadi");
   }
 
   Map<String, dynamic>? _tryAction(String reply) {
@@ -466,10 +574,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         final msg = (a["message"] ?? "").toString();
         final un = (a["username"] ?? "").toString().replaceAll("@", "");
         if (msg.isNotEmpty) {
-          uri = Uri.parse("https://t.me/share/url?url=&text=${enc(msg)}");
-          say = "Telegram xabarini tayyorladim - kimga yuborishni tanlang.";
+          intent = AndroidIntent(
+            action: "android.intent.action.SEND",
+            type: "text/plain",
+            arguments: <String, dynamic>{"android.intent.extra.TEXT": msg},
+          );
+          say = "Xabar tayyor - Telegram va odamni tanlang.";
         } else if (un.isNotEmpty) {
-          uri = Uri.parse("https://t.me/$un");
+          intent = AndroidIntent(
+            action: "android.intent.action.VIEW",
+            data: "tg://resolve?domain=$un",
+          );
           say = "Telegramda $un chatini ochyapman.";
         } else {
           uri = Uri.parse("https://t.me");
@@ -703,7 +818,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       case JState.speaking:
         return "Gapiryapman...";
       default:
-        return "\"Jarvis\" deng";
+        return "Bosib turib gapiring";
     }
   }
 
@@ -712,6 +827,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _anim.dispose();
     _audio.dispose();
     _textCtl.dispose();
+    _rec.dispose();
     super.dispose();
   }
 
@@ -773,7 +889,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     ),
                     const Spacer(),
                     GestureDetector(
-                      onTap: _orbTap,
+                      onTapDown: (_) => _startRec(),
+                      onTapUp: (_) => _stopRecAndSend(),
+                      onTapCancel: () => _stopRecAndSend(),
                       child: SizedBox(
                         width: 260,
                         height: 260,
@@ -786,33 +904,40 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                             color: Color(0xFF31C9FF), fontSize: 14, letterSpacing: 1)),
                     const SizedBox(height: 14),
                     GestureDetector(
-                      onTap: _micToggle,
+                      onTap: () {
+                        if (_recording) {
+                          _stopRecAndSend();
+                        } else {
+                          _startRec();
+                        }
+                      },
                       child: Container(
                         width: 62,
                         height: 62,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: !_handsFree
-                              ? const Color(0xFF1A2233)
-                              : const Color(0xFF17384A),
+                          color: _recording
+                              ? const Color(0xFF17384A)
+                              : const Color(0xFF1A2233),
                           border: Border.all(
-                            color: !_handsFree
-                                ? Colors.white24
-                                : const Color(0xFF2BF5C0),
+                            color: _recording
+                                ? const Color(0xFF2BF5C0)
+                                : Colors.white24,
                             width: 2,
                           ),
                         ),
                         child: Icon(
-                          !_handsFree ? Icons.mic_off : Icons.mic,
+                          _recording ? Icons.stop : Icons.mic,
                           size: 30,
-                          color: !_handsFree
-                              ? Colors.white54
-                              : const Color(0xFF2BF5C0),
+                          color: _recording ? const Color(0xFF2BF5C0) : Colors.white70,
                         ),
                       ),
                     ),
                     const SizedBox(height: 6),
-                    Text(!_handsFree ? "Mic o'chiq - sharni bosib gapiring" : "Mic yoniq - doim tinglaydi",
+                    Text(
+                        _recording
+                            ? "Tinglayapman... tugatish uchun bosing"
+                            : "Bosing (yoki sharni bosib turing) va gapiring",
                         style: const TextStyle(color: Colors.white38, fontSize: 11)),
                     const Spacer(),
                     Padding(
