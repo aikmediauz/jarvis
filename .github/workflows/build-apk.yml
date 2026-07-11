@@ -34,7 +34,7 @@ jobs:
         working-directory: android_app
         run: |
           MF=android/app/src/main/AndroidManifest.xml
-          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <application#' "$MF"
+          sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>\n    <application#' "$MF"
           sed -i 's#<application#<queries>\n    <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="https"/></intent>\n    <intent><action android:name="android.intent.action.DIAL"/><data android:scheme="tel"/></intent>\n    <intent><action android:name="android.intent.action.SENDTO"/><data android:scheme="smsto"/></intent>\n    <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="sms"/></intent>\n    </queries>\n    <application#' "$MF"
       - name: Get packages
         working-directory: android_app
