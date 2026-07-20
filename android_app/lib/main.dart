@@ -75,6 +75,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   String _voice = "Charon";
   String _ttsLang = "ru-RU";
   final _history = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _subs = [];
   JState _state = JState.idle;
   bool _handsFree = false;
   bool _sttReady = false;
@@ -100,6 +101,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _audio.onPlayerComplete.listen((_) => _afterSpeak());
     _initTts();
     _load();
+    _loadSubs();
   }
 
   Future<void> _initTts() async {
@@ -266,6 +268,63 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     if (_key.isEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _settings());
     }
+  }
+
+  // --- Hisob-kitob (pullik ilovalar / obunalar) ---
+  Future<void> _loadSubs() async {
+    final p = await SharedPreferences.getInstance();
+    final raw = p.getString("subs");
+    final list = <Map<String, dynamic>>[];
+    if (raw != null) {
+      try {
+        final d = jsonDecode(raw);
+        if (d is List) {
+          for (final e in d) {
+            list.add(Map<String, dynamic>.from(e));
+          }
+        }
+      } catch (_) {}
+    }
+    if (mounted) setState(() => _subs = list);
+  }
+
+  double _money2(dynamic v) =>
+      v is num ? v.toDouble() : double.tryParse(v?.toString() ?? "") ?? 0;
+  String _money(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
+
+  // Obunalarning qisqa xulosasini AI'ga uzatish uchun matn
+  String _financeSummary() {
+    if (_subs.isEmpty) return "";
+    final per = <String, double>{};
+    final items = <String>[];
+    for (final s in _subs) {
+      final name = (s["name"] ?? "Ilova").toString();
+      final amt = _money2(s["amount"]);
+      final cur = (s["currency"] ?? "UZS").toString();
+      final cycle = (s["cycle"] ?? "month").toString();
+      final monthly = cycle == "year" ? amt / 12 : amt;
+      per[cur] = (per[cur] ?? 0) + monthly;
+      items.add("$name ${_money(amt)} $cur/${cycle == "year" ? "yil" : "oy"}");
+    }
+    final totals =
+        per.entries.map((e) => "${_money(e.value)} ${e.key}/oy").join(" + ");
+    return "${items.join(", ")}. Jami: $totals";
+  }
+
+  // Dinamik system prompt: obuna ma'lumotini AI ko'radi
+  String _sysPrompt() {
+    final b = StringBuffer(systemPrompt);
+    b.write(
+        " hisob-kitob/obunalar/xarajat oynasini ochish uchun {\"action\":\"expenses\"} .");
+    final fin = _financeSummary();
+    if (fin.isNotEmpty) {
+      b.write(" FOYDALANUVCHI OBUNALARI (pullik ilovalar): ");
+      b.write(fin);
+      b.write(
+          " Agar foydalanuvchi xarajat, obuna yoki to'lov haqida so'rasa, shu ma'lumotdan hisoblab javob ber.");
+    }
+    return b.toString();
   }
 
   Future<void> _saveKey(String k) async {
@@ -500,7 +559,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final url = Uri.parse(
           "https://generativelanguage.googleapis.com/v1beta/models/$m:generateContent?key=$_key");
       final body = jsonEncode({
-        "system_instruction": {"parts": [{"text": systemPrompt}]},
+        "system_instruction": {"parts": [{"text": _sysPrompt()}]},
         "contents": contents,
         "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024}
       });
@@ -550,6 +609,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       return int.tryParse(v?.toString() ?? "") ?? d;
     }
     switch (action) {
+      case "expenses":
+        setState(() => _botText = "Hisob-kitob oynasini ochyapman.");
+        _set(JState.idle);
+        await Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const SubscriptionsPage()));
+        await _loadSubs();
+        return;
       case "call":
         uri = Uri.parse("tel:${a["number"]}");
         say = "${a["number"]} raqamiga qo'ng'iroq ochyapman.";
@@ -657,7 +723,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final url = Uri.parse(
           "https://generativelanguage.googleapis.com/v1beta/models/$m:generateContent?key=$_key");
       final body = jsonEncode({
-        "system_instruction": {"parts": [{"text": systemPrompt}]},
+        "system_instruction": {"parts": [{"text": _sysPrompt()}]},
         "contents": _history,
         "generationConfig": {"temperature": 0.6, "maxOutputTokens": 1024}
       });
@@ -886,6 +952,18 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                                   fontWeight: FontWeight.w600)),
                           const Spacer(),
                           IconButton(
+                              onPressed: () async {
+                                await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                        builder: (_) =>
+                                            const SubscriptionsPage()));
+                              await _loadSubs();
+                            },
+                              icon: const Icon(
+                                Icons.account_balance_wallet_outlined,
+                                color: Colors.white70)),
+                          IconButton(
                               onPressed: _settings,
                               icon: const Icon(Icons.settings, color: Colors.white70)),
                         ],
@@ -1003,6 +1081,242 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
           },
         ),
       ),
+    );
+  }
+}
+
+// ===================== HISOB-KITOB / OBUNALAR =====================
+class SubscriptionsPage extends StatefulWidget {
+  const SubscriptionsPage({super.key});
+  @override
+  State<SubscriptionsPage> createState() => _SubscriptionsPageState();
+}
+
+class _SubscriptionsPageState extends State<SubscriptionsPage> {
+  List<Map<String, dynamic>> _subs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    final raw = p.getString("subs");
+    final list = <Map<String, dynamic>>[];
+    if (raw != null) {
+      try {
+        final d = jsonDecode(raw);
+        if (d is List) {
+          for (final e in d) {
+            list.add(Map<String, dynamic>.from(e));
+          }
+        }
+      } catch (_) {}
+    }
+    setState(() => _subs = list);
+  }
+
+  Future<void> _save() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString("subs", jsonEncode(_subs));
+  }
+
+  double _amt(dynamic v) =>
+      v is num ? v.toDouble() : double.tryParse(v?.toString() ?? "") ?? 0;
+  String _fmt(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
+  double _monthly(Map s) {
+    final amt = _amt(s["amount"]);
+    return (s["cycle"] == "year") ? amt / 12 : amt;
+  }
+
+  Map<String, double> _perCurrencyMonthly() {
+    final m = <String, double>{};
+    for (final s in _subs) {
+      final c = (s["currency"] ?? "UZS").toString();
+      m[c] = (m[c] ?? 0) + _monthly(s);
+    }
+    return m;
+  }
+
+  void _edit([int? idx]) {
+    final s = idx != null
+        ? _subs[idx]
+        : {"name": "", "amount": 0, "currency": "UZS", "cycle": "month", "day": 1};
+    final nameC = TextEditingController(text: (s["name"] ?? "").toString());
+    final amtC = TextEditingController(
+        text: _amt(s["amount"]) == 0 ? "" : _fmt(_amt(s["amount"])));
+    String cur = (s["currency"] ?? "UZS").toString();
+    String cycle = (s["cycle"] ?? "month").toString();
+    final dayC = TextEditingController(text: (s["day"] ?? 1).toString());
+    showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF111826),
+          title: Text(idx == null ? "Yangi obuna" : "Tahrirlash"),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(
+                controller: nameC,
+                decoration: const InputDecoration(
+                    labelText: "Ilova nomi (masalan Netflix)"),
+              ),
+              TextField(
+                controller: amtC,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: "Narxi"),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                const Text("Valyuta:", style: TextStyle(color: Colors.white54)),
+                const SizedBox(width: 10),
+                DropdownButton<String>(
+                  value: cur,
+                  dropdownColor: const Color(0xFF111826),
+                  items: const ["UZS", "USD", "EUR", "RUB"]
+                      .map((e) =>
+                          DropdownMenuItem(value: e, child: Text(e)))
+                      .toList(),
+                  onChanged: (v) => setD(() => cur = v ?? "UZS"),
+                ),
+                const Spacer(),
+                DropdownButton<String>(
+                  value: cycle,
+                  dropdownColor: const Color(0xFF111826),
+                  items: const [
+                    DropdownMenuItem(value: "month", child: Text("oylik")),
+                    DropdownMenuItem(value: "year", child: Text("yillik")),
+                  ],
+                  onChanged: (v) => setD(() => cycle = v ?? "month"),
+                ),
+              ]),
+              TextField(
+                controller: dayC,
+                keyboardType: TextInputType.number,
+                decoration:
+                    const InputDecoration(labelText: "To'lov kuni (1-31)"),
+              ),
+            ]),
+          ),
+          actions: [
+            if (idx != null)
+              TextButton(
+                onPressed: () {
+                  setState(() => _subs.removeAt(idx));
+                  _save();
+                  Navigator.pop(c);
+                },
+                child: const Text("O'chirish",
+                    style: TextStyle(color: Colors.redAccent)),
+              ),
+            TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text("Bekor")),
+            ElevatedButton(
+              onPressed: () {
+                final item = {
+                  "name":
+                      nameC.text.trim().isEmpty ? "Ilova" : nameC.text.trim(),
+                  "amount": _amt(amtC.text.trim()),
+                  "currency": cur,
+                  "cycle": cycle,
+                  "day": int.tryParse(dayC.text.trim()) ?? 1,
+                };
+                setState(() {
+                  if (idx == null) {
+                    _subs.add(item);
+                  } else {
+                    _subs[idx] = item;
+                  }
+                });
+                _save();
+                Navigator.pop(c);
+              },
+              child: const Text("Saqlash"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final perCur = _perCurrencyMonthly();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Hisob-kitob · Obunalar"),
+        backgroundColor: const Color(0xFF0B1220),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _edit(),
+        backgroundColor: const Color(0xFF31C9FF),
+        icon: const Icon(Icons.add, color: Colors.black),
+        label: const Text("Qo'shish", style: TextStyle(color: Colors.black)),
+      ),
+      body: Column(children: [
+        Container(
+          width: double.infinity,
+          margin: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: const Color(0xFF111826),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("Jami xarajat",
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              const SizedBox(height: 8),
+              if (perCur.isEmpty)
+                const Text("Hali obuna qo'shilmagan",
+                    style: TextStyle(color: Colors.white38)),
+              for (final e in perCur.entries)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 3),
+                  child: Text(
+                    "${_fmt(e.value)} ${e.key} / oy   ·   ${_fmt(e.value * 12)} ${e.key} / yil",
+                    style: const TextStyle(
+                        color: Color(0xFF31C9FF),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w700),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _subs.isEmpty
+              ? const Center(
+                  child: Text(
+                      "Pastdagi tugma bilan pullik ilovalaringizni qo'shing",
+                      style: TextStyle(color: Colors.white38)))
+              : ListView.builder(
+                  itemCount: _subs.length,
+                  itemBuilder: (c, i) {
+                    final s = _subs[i];
+                    return ListTile(
+                      leading: const Icon(Icons.subscriptions,
+                          color: Color(0xFF31C9FF)),
+                      title: Text((s["name"] ?? "").toString(),
+                          style: const TextStyle(color: Colors.white)),
+                      subtitle: Text(
+                        "${_fmt(_amt(s["amount"]))} ${s["currency"]} / ${s["cycle"] == "year" ? "yil" : "oy"}  ·  ${s["day"] ?? 1}-kun",
+                        style: const TextStyle(color: Colors.white54),
+                      ),
+                      trailing: Text("${_fmt(_monthly(s))} ${s["currency"]}/oy",
+                          style: const TextStyle(color: Colors.white70)),
+                      onTap: () => _edit(i),
+                    );
+                  },
+                ),
+        ),
+      ]),
     );
   }
 }
