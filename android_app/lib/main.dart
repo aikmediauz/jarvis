@@ -77,6 +77,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   String _ttsLang = "ru-RU";
   final _history = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _subs = [];
+  final List<Map<String, String>> _chat = [];
+  final ScrollController _scroll = ScrollController();
   JState _state = JState.idle;
   bool _handsFree = false;
   bool _sttReady = false;
@@ -395,6 +397,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     await _speak("Salom, men JARVIS. Ovoz tanlandi.");
   }
 
+  void _push(String role, String text) {
+    if (text.trim().isEmpty) return;
+    setState(() => _chat.add({"role": role, "text": text}));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.animateTo(_scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+      }
+    });
+  }
+
   void _set(JState s) {
     if (mounted) setState(() => _state = s);
   }
@@ -497,6 +510,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   Future<void> _process(String text) async {
     if (text.isEmpty) return;
+    _push("user", text);
     setState(() => _userText = text);
     _set(JState.thinking);
     _history.add({"role": "user", "parts": [{"text": text}]});
@@ -523,6 +537,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       await _doAction(act);
     } else {
       setState(() => _botText = reply);
+      _push("bot", reply);
       _set(JState.speaking);
       await _speak(reply);
     }
@@ -575,6 +590,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             "Eshitmadim (yozildi: ${pcm.length} bayt). Mikrofonni bosib, biroz uzunroq gapiring.");
         return;
       }
+      _push("user", "🎤 Ovozli xabar");
       final wav = _pcmToWav(pcm, 16000);
       final b64 = base64Encode(wav);
       final audioTurn = <String, dynamic>{
@@ -657,6 +673,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     }
     switch (action) {
       case "expenses":
+        _push("bot", "Hisob-kitob oynasini ochyapman.");
         setState(() => _botText = "Hisob-kitob oynasini ochyapman.");
         _set(JState.idle);
         await Navigator.push(context,
@@ -664,6 +681,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         await _loadSubs();
         return;
       case "finance":
+        _push("bot", "Moliya oynasini ochyapman.");
         setState(() => _botText = "Moliya oynasini ochyapman.");
         _set(JState.idle);
         await Navigator.push(context,
@@ -767,6 +785,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       say = "Bajarolmadim: $e";
       setState(() => _botText = say);
     }
+    _push("bot", say);
     _set(JState.speaking);
     await _speak(say);
   }
@@ -979,170 +998,185 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       );
     }
     return Scaffold(
+      backgroundColor: const Color(0xFF05070D),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E17),
+        elevation: 0,
+        title: const Text("J A R V I S",
+            style: TextStyle(
+                letterSpacing: 4, fontWeight: FontWeight.w600, fontSize: 16)),
+        actions: [
+          IconButton(
+              tooltip: "Moliya",
+              onPressed: () async {
+                await Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const FinancePage()));
+                await _loadTxns();
+              },
+              icon: const Icon(Icons.pie_chart_outline, color: Colors.white70)),
+          IconButton(
+              tooltip: "Obunalar",
+              onPressed: () async {
+                await Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SubscriptionsPage()));
+                await _loadSubs();
+              },
+              icon: const Icon(Icons.account_balance_wallet_outlined,
+                  color: Colors.white70)),
+          IconButton(
+              onPressed: _settings,
+              icon: const Icon(Icons.settings, color: Colors.white70)),
+        ],
+      ),
       body: SafeArea(
-        child: AnimatedBuilder(
-          animation: _anim,
-          builder: (context, _) {
-            return Stack(
-              children: [
-                if (_state == JState.thinking || _state == JState.speaking)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: CustomPaint(
-                        painter: EdgeGlowPainter(_anim.value, _state),
-                      ),
-                    ),
-                  ),
-                Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Row(
-                        children: [
-                          const Text("J A R V I S",
-                              style: TextStyle(
-                                  fontSize: 18,
-                                  letterSpacing: 4,
-                                  fontWeight: FontWeight.w600)),
-                          const Spacer(),
-                          IconButton(
-                              onPressed: () async {
-                                await Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                        builder: (_) => const FinancePage()));
-                                await _loadTxns();
-                              },
-                              icon: const Icon(Icons.pie_chart_outline,
-                                  color: Colors.white70)),
-                          IconButton(
-                              onPressed: () async {
-                                await Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                        builder: (_) =>
-                                            const SubscriptionsPage()));
-                                await _loadSubs();
-                              },
-                              icon: const Icon(
-                                  Icons.account_balance_wallet_outlined,
-                                  color: Colors.white70)),
-                          IconButton(
-                              onPressed: _settings,
-                              icon: const Icon(Icons.settings, color: Colors.white70)),
-                        ],
-                      ),
-                    ),
-                    const Spacer(),
-                    GestureDetector(
-                      onTapDown: (_) => _startRec(),
-                      onTapUp: (_) => _stopRecAndSend(),
-                      onTapCancel: () => _stopRecAndSend(),
-                      child: SizedBox(
-                        width: 260,
-                        height: 260,
-                        child: CustomPaint(painter: OrbPainter(_anim.value, _state)),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    Text(_statusLabel,
-                        style: const TextStyle(
-                            color: Color(0xFF31C9FF), fontSize: 14, letterSpacing: 1)),
-                    const SizedBox(height: 14),
-                    GestureDetector(
-                      onTap: () {
-                        if (_recording) {
-                          _stopRecAndSend();
-                        } else {
-                          _startRec();
-                        }
-                      },
-                      child: Container(
-                        width: 62,
-                        height: 62,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: _recording
-                              ? const Color(0xFF17384A)
-                              : const Color(0xFF1A2233),
-                          border: Border.all(
-                            color: _recording
-                                ? const Color(0xFF2BF5C0)
-                                : Colors.white24,
-                            width: 2,
-                          ),
-                        ),
-                        child: Icon(
-                          _recording ? Icons.stop : Icons.mic,
-                          size: 30,
-                          color: _recording ? const Color(0xFF2BF5C0) : Colors.white70,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                        _recording
-                            ? "Tinglayapman... tugatish uchun bosing"
-                            : "Bosing (yoki sharni bosib turing) va gapiring",
-                        style: const TextStyle(color: Colors.white38, fontSize: 11)),
-                    const Spacer(),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+        top: false,
+        child: Column(
+          children: [
+            Expanded(
+              child: _chat.isEmpty
+                  ? Center(
                       child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (_userText.isNotEmpty)
-                            Text("Siz: $_userText",
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(color: Colors.white54)),
-                          const SizedBox(height: 8),
-                          Text(_botText,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.white, fontSize: 16)),
+                          Container(
+                            width: 96,
+                            height: 96,
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              gradient: RadialGradient(
+                                  colors: [Color(0xFF31C9FF), Color(0xFF0A2A3F)]),
+                            ),
+                            child: const Icon(Icons.auto_awesome,
+                                size: 42, color: Colors.white),
+                          ),
+                          const SizedBox(height: 18),
+                          const Text("Salom! Men JARVIS.",
+                              style:
+                                  TextStyle(color: Colors.white, fontSize: 18)),
+                          const SizedBox(height: 6),
+                          const Text(
+                              "Yozing yoki mikrofonni bosib gapiring.",
+                              style: TextStyle(
+                                  color: Colors.white38, fontSize: 13)),
                         ],
                       ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
-                      child: Row(children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _textCtl,
-                            style: const TextStyle(color: Colors.white, fontSize: 14),
-                            decoration: InputDecoration(
-                              hintText: "Yozib ham buyruq bering...",
-                              hintStyle:
-                                  const TextStyle(color: Colors.white30, fontSize: 13),
-                              filled: true,
-                              fillColor: const Color(0xFF121A28),
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 14, vertical: 10),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(24),
-                                borderSide: BorderSide.none,
+                    )
+                  : ListView.builder(
+                      controller: _scroll,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 12),
+                      itemCount: _chat.length,
+                      itemBuilder: (c, i) {
+                        final m = _chat[i];
+                        final me = m["role"] == "user";
+                        return Align(
+                          alignment:
+                              me ? Alignment.centerRight : Alignment.centerLeft,
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(vertical: 4),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            constraints: BoxConstraints(
+                                maxWidth:
+                                    MediaQuery.of(context).size.width * 0.78),
+                            decoration: BoxDecoration(
+                              color: me
+                                  ? const Color(0xFF1E6BFF)
+                                  : const Color(0xFF141B2A),
+                              borderRadius: BorderRadius.only(
+                                topLeft: const Radius.circular(16),
+                                topRight: const Radius.circular(16),
+                                bottomLeft: Radius.circular(me ? 16 : 4),
+                                bottomRight: Radius.circular(me ? 4 : 16),
                               ),
                             ),
-                            onSubmitted: (t) {
-                              _textCtl.clear();
-                              if (t.trim().isNotEmpty) _process(t.trim());
-                            },
+                            child: Text(m["text"] ?? "",
+                                style: const TextStyle(
+                                    color: Colors.white, fontSize: 15)),
                           ),
-                        ),
-                        IconButton(
-                          onPressed: () {
-                            final t = _textCtl.text.trim();
-                            _textCtl.clear();
-                            if (t.isNotEmpty) _process(t);
-                          },
-                          icon: const Icon(Icons.send, color: Color(0xFF31C9FF)),
-                        ),
-                      ]),
+                        );
+                      },
                     ),
-                    const SizedBox(height: 12),
-                  ],
+            ),
+            if (_state == JState.thinking)
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: EdgeInsets.only(left: 20, bottom: 6),
+                  child: Text("JARVIS yozmoqda...",
+                      style:
+                          TextStyle(color: Color(0xFF31C9FF), fontSize: 12)),
                 ),
-              ],
-            );
-          },
+              ),
+            if (_state == JState.listening)
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: EdgeInsets.only(left: 20, bottom: 6),
+                  child: Text("Tinglayapman...",
+                      style:
+                          TextStyle(color: Color(0xFF2BF5C0), fontSize: 12)),
+                ),
+              ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
+              color: const Color(0xFF0A0E17),
+              child: Row(children: [
+                Expanded(
+                  child: TextField(
+                    controller: _textCtl,
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
+                    minLines: 1,
+                    maxLines: 5,
+                    textInputAction: TextInputAction.send,
+                    decoration: InputDecoration(
+                      hintText: "JARVIS'ga yozing...",
+                      hintStyle: const TextStyle(color: Colors.white30),
+                      filled: true,
+                      fillColor: const Color(0xFF141B2A),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onSubmitted: (t) {
+                      _textCtl.clear();
+                      if (t.trim().isNotEmpty) _process(t.trim());
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTapDown: (_) => _startRec(),
+                  onTapUp: (_) => _stopRecAndSend(),
+                  onTapCancel: () => _stopRecAndSend(),
+                  child: Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _recording
+                          ? const Color(0xFF17384A)
+                          : const Color(0xFF1E6BFF),
+                    ),
+                    child: Icon(_recording ? Icons.stop : Icons.mic,
+                        color: Colors.white, size: 24),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                IconButton(
+                  onPressed: () {
+                    final t = _textCtl.text.trim();
+                    _textCtl.clear();
+                    if (t.isNotEmpty) _process(t);
+                  },
+                  icon: const Icon(Icons.send, color: Color(0xFF31C9FF)),
+                ),
+              ]),
+            ),
+          ],
         ),
       ),
     );
