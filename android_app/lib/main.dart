@@ -15,6 +15,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:another_telephony/telephony.dart';
+import 'package:notification_listener_service/notification_listener_service.dart';
+import 'package:notification_listener_service/notification_event.dart';
 import 'dart:io';
 
 void main() => runApp(const JarvisApp());
@@ -106,6 +108,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _load();
     _loadSubs();
     _loadTxns();
+    _initNotif();
   }
 
   Future<void> _initTts() async {
@@ -395,6 +398,116 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     await p.setString("tts_voice", name);
     await p.setBool("cloud_voice", true);
     await _speak("Salom, men JARVIS. Ovoz tanlandi.");
+  }
+
+  // --- Bildirishnoma (bank/to'lov ilovalari) avtomatik hisob-kitob ---
+  StreamSubscription<ServiceNotificationEvent>? _notifSub;
+
+  Future<void> _initNotif() async {
+    try {
+      final ok = await NotificationListenerService.isPermissionGranted();
+      if (!ok) return;
+      _notifSub?.cancel();
+      _notifSub = NotificationListenerService.notificationsStream.listen((e) {
+        if (e.hasRemoved == true) return;
+        _handleNotif("${e.title} ${e.content}", e.packageName ?? "notif");
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _handleNotif(String body, String pkg) async {
+    final t = _parseFin(body, pkg, DateTime.now().millisecondsSinceEpoch);
+    if (t == null) return;
+    final p = await SharedPreferences.getInstance();
+    final raw = p.getString("txns");
+    final list = <Map<String, dynamic>>[];
+    if (raw != null) {
+      try {
+        final d = jsonDecode(raw);
+        if (d is List) {
+          for (final x in d) {
+            list.add(Map<String, dynamic>.from(x));
+          }
+        }
+      } catch (_) {}
+    }
+    final key = "${t["amount"]}_${body.hashCode}";
+    for (final x in list) {
+      if ("${x["amount"]}_${(x["raw"] ?? "").hashCode}" == key) return;
+    }
+    list.insert(0, t);
+    while (list.length > 2000) {
+      list.removeLast();
+    }
+    await p.setString("txns", jsonEncode(list));
+  }
+
+  Map<String, dynamic>? _parseFin(String body, String bank, int ts) {
+    final b = body.toLowerCase();
+    final cur = RegExp(
+        r"(\d[\d  ]*(?:[.,]\d{1,2})?)\s*(so['ʻ‘’]?m|s[uў]m|uzs|сўм|сум)",
+        caseSensitive: false);
+    final ms = cur.allMatches(body).toList();
+    if (ms.isEmpty) return null;
+    double? amount;
+    for (final m in ms) {
+      final s0 = m.start;
+      final ctx = body.substring(s0 - 28 < 0 ? 0 : s0 - 28, s0).toLowerCase();
+      if (ctx.contains("balans") ||
+          ctx.contains("dostupno") ||
+          ctx.contains("qoldiq") ||
+          ctx.contains("ostatok") ||
+          ctx.contains("баланс") ||
+          ctx.contains("доступно")) {
+        continue;
+      }
+      var g = m.group(1)!.replaceAll(RegExp(r"[  ]"), "");
+      if (RegExp(r"^\d+[.,]\d{1,2}$").hasMatch(g)) {
+        g = g.replaceAll(",", ".");
+      } else {
+        g = g.replaceAll(RegExp(r"[.,]"), "");
+      }
+      final v = double.tryParse(g);
+      if (v != null && v >= 1) {
+        amount = v;
+        break;
+      }
+    }
+    if (amount == null || amount < 1 || amount > 2000000000) return null;
+    const inKw = [
+      "popoln", "kirim", "tushdi", "zachisl", "prixod", "приход",
+      "пополн", "поступ", "kelib", "qaytar"
+    ];
+    const outKw = [
+      "oplata", "pokupka", "spisan", "yechil", "chiqim", "to'lov",
+      "снятие", "оплата", "покупка", "списан", "xarid", "perevod", "otpravl"
+    ];
+    final isIn = inKw.any((k) => b.contains(k));
+    final isOut = outKw.any((k) => b.contains(k));
+    final dir = isIn && !isOut ? "in" : "out";
+    String cat = dir == "in" ? "Kirim" : "Xaridlar";
+    if (dir == "out") {
+      if (["taksi", "taxi", "yandex", "bolt", "uklon"].any((k) => b.contains(k))) {
+        cat = "Transport";
+      } else if (["market", "magazin", "korzinka", "makro", "havas"]
+          .any((k) => b.contains(k))) {
+        cat = "Oziq-ovqat";
+      } else if (["uzmobile", "beeline", "ucell", "mobiuz", "internet"]
+          .any((k) => b.contains(k))) {
+        cat = "Aloqa";
+      } else if (["perevod", "p2p", "transfer", "click", "payme"]
+          .any((k) => b.contains(k))) {
+        cat = "O'tkazma";
+      }
+    }
+    return {
+      "ts": ts,
+      "amount": amount,
+      "dir": dir,
+      "cat": cat,
+      "bank": bank,
+      "raw": body
+    };
   }
 
   void _push(String role, String text) {
@@ -967,6 +1080,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   @override
   void dispose() {
+    _notifSub?.cancel();
     _anim.dispose();
     _audio.dispose();
     _textCtl.dispose();
@@ -1783,6 +1897,23 @@ class _FinancePageState extends State<FinancePage> {
               onPressed: _busy ? null : _import,
               icon: const Icon(Icons.sms),
               label: Text(_busy ? "..." : "SMS'dan yangilash"),
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+          child: SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () async {
+                final ok =
+                    await NotificationListenerService.requestPermission();
+                setState(() => _msg = ok
+                    ? "Bildirishnoma yoqildi. Ilovani qayta oching."
+                    : "Ruxsat berilmadi.");
+              },
+              icon: const Icon(Icons.notifications_active_outlined),
+              label: const Text("Bank ilovalari: avtomatik ulash"),
             ),
           ),
         ),
