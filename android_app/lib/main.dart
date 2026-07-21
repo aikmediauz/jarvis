@@ -1455,22 +1455,52 @@ class _FinancePageState extends State<FinancePage> {
     return "Xaridlar";
   }
 
-  Map<String, dynamic>? _parse(String addr, String body, int dateMs) {
-    final b = body.toLowerCase();
-    final m = RegExp(r"([0-9][0-9\s.,]{2,})\s*(so'm|sum|uzs)", caseSensitive: false)
-            .firstMatch(body) ??
-        RegExp(r"([0-9][0-9\s.,]{4,})").firstMatch(body);
-    if (m == null) return null;
-    var g = m.group(1)!.replaceAll(RegExp(r"\s"), "");
-    if (RegExp(r"^\d+[.,]\d{2}$").hasMatch(g)) {
+  double? _num(String s) {
+    var g = s.replaceAll(RegExp(r"[  ]"), "");
+    if (RegExp(r"^\d+[.,]\d{1,2}$").hasMatch(g)) {
       g = g.replaceAll(",", ".");
     } else {
       g = g.replaceAll(RegExp(r"[.,]"), "");
     }
-    final amount = double.tryParse(g);
-    if (amount == null || amount < 100) return null;
-    const inKw = ["popolnen", "kirim", "tushdi", "zachisl", "prixod", "nachisl", "+"];
-    const outKw = ["oplata", "pokupka", "spisan", "yechildi", "chiqim", "to'lov", "snyatie", "perevod", "-"];
+    return double.tryParse(g);
+  }
+
+  Map<String, dynamic>? _parse(String addr, String body, int dateMs) {
+    final b = body.toLowerCase();
+    final cur = RegExp(
+        r"(\d[\d  ]*(?:[.,]\d{1,2})?)\s*(so['ʻ‘’]?m|s[uў]m|uzs|сўм|сум)",
+        caseSensitive: false);
+    final ms = cur.allMatches(body).toList();
+    if (ms.isEmpty) return null;
+    double? amount;
+    for (final m in ms) {
+      final s0 = m.start;
+      final ctx = body.substring(s0 - 28 < 0 ? 0 : s0 - 28, s0).toLowerCase();
+      if (ctx.contains("balans") ||
+          ctx.contains("dostupno") ||
+          ctx.contains("qoldiq") ||
+          ctx.contains("ostatok") ||
+          ctx.contains("баланс") ||
+          ctx.contains("доступно")) {
+        continue;
+      }
+      final v = _num(m.group(1)!);
+      if (v != null && v >= 1) {
+        amount = v;
+        break;
+      }
+    }
+    amount ??= _num(ms.first.group(1)!);
+    if (amount == null || amount < 1 || amount > 2000000000) return null;
+    const inKw = [
+      "popoln", "kirim", "tushdi", "zachisl", "prixod", "приход",
+      "пополн", "поступ", "nachisl", "vozvrat", "qaytar"
+    ];
+    const outKw = [
+      "oplata", "pokupka", "spisan", "yechil", "chiqim", "to'lov",
+      "снятие", "оплата", "покупка",
+      "списан", "xarid", "otpravl", "perevod", "olindi"
+    ];
     final isIn = inKw.any((k) => b.contains(k));
     final isOut = outKw.any((k) => b.contains(k));
     final dir = isIn && !isOut ? "in" : "out";
@@ -1632,6 +1662,35 @@ class _FinancePageState extends State<FinancePage> {
       appBar: AppBar(
         title: const Text("Moliya · Bank hisob-kitob"),
         backgroundColor: const Color(0xFF0B1220),
+        actions: [
+          IconButton(
+            tooltip: "Hammasini tozalash",
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (c) => AlertDialog(
+                  backgroundColor: const Color(0xFF111826),
+                  title: const Text("Tozalash"),
+                  content: const Text("Barcha amaliyotlar o'chirilsinmi?"),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(c),
+                        child: const Text("Bekor")),
+                    ElevatedButton(
+                      onPressed: () {
+                        setState(() => _txns = []);
+                        _save();
+                        Navigator.pop(c);
+                      },
+                      child: const Text("Ha, o'chir"),
+                    ),
+                  ],
+                ),
+              );
+            },
+            icon: const Icon(Icons.delete_outline, color: Colors.white70),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _addManual,
