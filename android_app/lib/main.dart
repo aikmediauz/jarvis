@@ -14,6 +14,7 @@ import 'package:android_intent_plus/android_intent.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:another_telephony/telephony.dart';
 import 'dart:io';
 
 void main() => runApp(const JarvisApp());
@@ -102,6 +103,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _initTts();
     _load();
     _loadSubs();
+    _loadTxns();
   }
 
   Future<void> _initTts() async {
@@ -317,6 +319,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final b = StringBuffer(systemPrompt);
     b.write(
         " hisob-kitob/obunalar/xarajat oynasini ochish uchun {\"action\":\"expenses\"} .");
+    b.write(
+        " moliya/bank karta kirim-chiqim va xarajat statistikasi uchun {\"action\":\"finance\"} .");
     final fin = _financeSummary();
     if (fin.isNotEmpty) {
       b.write(" FOYDALANUVCHI OBUNALARI (pullik ilovalar): ");
@@ -324,7 +328,50 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       b.write(
           " Agar foydalanuvchi xarajat, obuna yoki to'lov haqida so'rasa, shu ma'lumotdan hisoblab javob ber.");
     }
+    final ff = _financeAiSummary();
+    if (ff.isNotEmpty) b.write(" MOLIYA: " + ff);
     return b.toString();
+  }
+
+  // --- Moliya: bank SMS hisob-kitob (AI xulosasi uchun) ---
+  List<Map<String, dynamic>> _txns = [];
+
+  Future<void> _loadTxns() async {
+    final p = await SharedPreferences.getInstance();
+    final raw = p.getString("txns");
+    final list = <Map<String, dynamic>>[];
+    if (raw != null) {
+      try {
+        final d = jsonDecode(raw);
+        if (d is List) {
+          for (final e in d) {
+            list.add(Map<String, dynamic>.from(e));
+          }
+        }
+      } catch (_) {}
+    }
+    if (mounted) setState(() => _txns = list);
+  }
+
+  String _financeAiSummary() {
+    if (_txns.isEmpty) return "";
+    final now = DateTime.now();
+    double inc = 0, exp = 0;
+    final cats = <String, double>{};
+    for (final t in _txns) {
+      final d = DateTime.fromMillisecondsSinceEpoch(t["ts"] as int);
+      if (d.year != now.year || d.month != now.month) continue;
+      final a = (t["amount"] as num).toDouble();
+      if (t["dir"] == "in") {
+        inc += a;
+      } else {
+        exp += a;
+        cats[t["cat"]] = (cats[t["cat"]] ?? 0) + a;
+      }
+    }
+    final top = cats.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final tops = top.take(3).map((e) => "${e.key} ${_money(e.value)}").join(", ");
+    return "Shu oy: kirim ${_money(inc)}, chiqim ${_money(exp)} so'm. Ko'p xarajat: $tops.";
   }
 
   Future<void> _saveKey(String k) async {
@@ -615,6 +662,13 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         await Navigator.push(context,
             MaterialPageRoute(builder: (_) => const SubscriptionsPage()));
         await _loadSubs();
+        return;
+      case "finance":
+        setState(() => _botText = "Moliya oynasini ochyapman.");
+        _set(JState.idle);
+        await Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const FinancePage()));
+        await _loadTxns();
         return;
       case "call":
         uri = Uri.parse("tel:${a["number"]}");
@@ -956,13 +1010,23 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                                 await Navigator.push(
                                     context,
                                     MaterialPageRoute(
+                                        builder: (_) => const FinancePage()));
+                                await _loadTxns();
+                              },
+                              icon: const Icon(Icons.pie_chart_outline,
+                                  color: Colors.white70)),
+                          IconButton(
+                              onPressed: () async {
+                                await Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
                                         builder: (_) =>
                                             const SubscriptionsPage()));
-                              await _loadSubs();
-                            },
+                                await _loadSubs();
+                              },
                               icon: const Icon(
-                                Icons.account_balance_wallet_outlined,
-                                color: Colors.white70)),
+                                  Icons.account_balance_wallet_outlined,
+                                  color: Colors.white70)),
                           IconButton(
                               onPressed: _settings,
                               icon: const Icon(Icons.settings, color: Colors.white70)),
@@ -1316,6 +1380,389 @@ class _SubscriptionsPageState extends State<SubscriptionsPage> {
                   },
                 ),
         ),
+      ]),
+    );
+  }
+}
+
+// ===================== MOLIYA (bank SMS hisob-kitob) =====================
+class FinancePage extends StatefulWidget {
+  const FinancePage({super.key});
+  @override
+  State<FinancePage> createState() => _FinancePageState();
+}
+
+class _FinancePageState extends State<FinancePage> {
+  final Telephony _telephony = Telephony.instance;
+  List<Map<String, dynamic>> _txns = [];
+  bool _busy = false;
+  String _msg = "";
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    final raw = p.getString("txns");
+    final list = <Map<String, dynamic>>[];
+    if (raw != null) {
+      try {
+        final d = jsonDecode(raw);
+        if (d is List) {
+          for (final e in d) {
+            list.add(Map<String, dynamic>.from(e));
+          }
+        }
+      } catch (_) {}
+    }
+    list.sort((a, b) => (b["ts"] as int).compareTo(a["ts"] as int));
+    setState(() => _txns = list);
+  }
+
+  Future<void> _save() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString("txns", jsonEncode(_txns));
+  }
+
+  String _money(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
+
+  String _categorize(String b, String dir) {
+    if (dir == "in") return "Kirim";
+    bool has(List<String> ks) => ks.any((k) => b.contains(k));
+    if (has(["market", "magazin", "supermarket", "korzinka", "makro", "havas", "oziq"])) {
+      return "Oziq-ovqat";
+    }
+    if (has(["taksi", "taxi", "yandex", "bolt", "benzin", "zapravka", "neft"])) {
+      return "Transport";
+    }
+    if (has(["kafe", "cafe", "restoran", "kfc", "evos", "oqtepa", "food"])) {
+      return "Ovqatlanish";
+    }
+    if (has(["uzmobile", "beeline", "ucell", "mobiuz", "humans", "internet", "aloqa"])) {
+      return "Aloqa";
+    }
+    if (has(["kommunal", "gaz", "suv", "svet", "hudud", "elektr"])) {
+      return "Kommunal";
+    }
+    if (has(["perevod", "p2p", "otkazma", "transfer", "click", "payme", "paynet"])) {
+      return "O'tkazma";
+    }
+    if (has(["apteka", "dori", "clinic", "shifo"])) return "Sog'liq";
+    return "Xaridlar";
+  }
+
+  Map<String, dynamic>? _parse(String addr, String body, int dateMs) {
+    final b = body.toLowerCase();
+    final m = RegExp(r"([0-9][0-9\s.,]{2,})\s*(so'm|sum|uzs)", caseSensitive: false)
+            .firstMatch(body) ??
+        RegExp(r"([0-9][0-9\s.,]{4,})").firstMatch(body);
+    if (m == null) return null;
+    var g = m.group(1)!.replaceAll(RegExp(r"\s"), "");
+    if (RegExp(r"^\d+[.,]\d{2}$").hasMatch(g)) {
+      g = g.replaceAll(",", ".");
+    } else {
+      g = g.replaceAll(RegExp(r"[.,]"), "");
+    }
+    final amount = double.tryParse(g);
+    if (amount == null || amount < 100) return null;
+    const inKw = ["popolnen", "kirim", "tushdi", "zachisl", "prixod", "nachisl", "+"];
+    const outKw = ["oplata", "pokupka", "spisan", "yechildi", "chiqim", "to'lov", "snyatie", "perevod", "-"];
+    final isIn = inKw.any((k) => b.contains(k));
+    final isOut = outKw.any((k) => b.contains(k));
+    final dir = isIn && !isOut ? "in" : "out";
+    return {
+      "ts": dateMs,
+      "amount": amount,
+      "dir": dir,
+      "cat": _categorize(b, dir),
+      "bank": addr,
+      "raw": body
+    };
+  }
+
+  Future<void> _import() async {
+    setState(() {
+      _busy = true;
+      _msg = "SMS o'qilyapti...";
+    });
+    bool granted = false;
+    try {
+      granted = (await _telephony.requestPhoneAndSmsPermissions) ?? false;
+    } catch (_) {}
+    if (!granted) {
+      final st = await Permission.sms.request();
+      granted = st.isGranted;
+    }
+    if (!granted) {
+      setState(() {
+        _busy = false;
+        _msg = "SMS ruxsati berilmadi. Sozlamalardan ruxsat bering.";
+      });
+      return;
+    }
+    List<SmsMessage> msgs = [];
+    try {
+      msgs = await _telephony.getInboxSms(
+          columns: [SmsColumn.ADDRESS, SmsColumn.BODY, SmsColumn.DATE]);
+    } catch (e) {
+      setState(() {
+        _busy = false;
+        _msg = "O'qib bo'lmadi: $e";
+      });
+      return;
+    }
+    final seen = _txns.map((t) => "${t["ts"]}_${t["amount"]}").toSet();
+    int added = 0;
+    for (final m in msgs) {
+      final t = _parse(m.address ?? "", m.body ?? "",
+          m.date ?? DateTime.now().millisecondsSinceEpoch);
+      if (t == null) continue;
+      final k = "${t["ts"]}_${t["amount"]}";
+      if (seen.contains(k)) continue;
+      seen.add(k);
+      _txns.add(t);
+      added++;
+    }
+    _txns.sort((a, b) => (b["ts"] as int).compareTo(a["ts"] as int));
+    await _save();
+    setState(() {
+      _busy = false;
+      _msg = "$added ta yangi amaliyot qo'shildi.";
+    });
+  }
+
+  void _addManual() {
+    final amtC = TextEditingController();
+    final noteC = TextEditingController();
+    String dir = "out";
+    showDialog(
+      context: context,
+      builder: (c) => StatefulBuilder(
+        builder: (c, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF111826),
+          title: const Text("Qo'lda qo'shish"),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: amtC,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(labelText: "Summa (so'm)"),
+            ),
+            TextField(
+              controller: noteC,
+              decoration: const InputDecoration(labelText: "Izoh (masalan: taksi)"),
+            ),
+            const SizedBox(height: 8),
+            Row(children: [
+              const Text("Turi:", style: TextStyle(color: Colors.white54)),
+              const SizedBox(width: 10),
+              DropdownButton<String>(
+                value: dir,
+                dropdownColor: const Color(0xFF111826),
+                items: const [
+                  DropdownMenuItem(value: "out", child: Text("Chiqim")),
+                  DropdownMenuItem(value: "in", child: Text("Kirim")),
+                ],
+                onChanged: (v) => setD(() => dir = v ?? "out"),
+              ),
+            ]),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(c), child: const Text("Bekor")),
+            ElevatedButton(
+              onPressed: () {
+                final a = double.tryParse(amtC.text
+                        .trim()
+                        .replaceAll(" ", "")
+                        .replaceAll(",", ".")) ??
+                    0;
+                if (a > 0) {
+                  final note = noteC.text.trim();
+                  _txns.insert(0, {
+                    "ts": DateTime.now().millisecondsSinceEpoch,
+                    "amount": a,
+                    "dir": dir,
+                    "cat": dir == "in" ? "Kirim" : _categorize(note.toLowerCase(), dir),
+                    "bank": "Qo'lda",
+                    "raw": note,
+                  });
+                  _save();
+                  setState(() {});
+                }
+                Navigator.pop(c);
+              },
+              child: const Text("Saqlash"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _fmtDate(int ms) {
+    final d = DateTime.fromMillisecondsSinceEpoch(ms);
+    String two(int x) => x < 10 ? "0$x" : "$x";
+    return "${two(d.day)}.${two(d.month)} ${two(d.hour)}:${two(d.minute)}";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    double inc = 0, exp = 0;
+    final cats = <String, double>{};
+    final month = _txns.where((t) {
+      final d = DateTime.fromMillisecondsSinceEpoch(t["ts"] as int);
+      return d.year == now.year && d.month == now.month;
+    }).toList();
+    for (final t in month) {
+      final a = (t["amount"] as num).toDouble();
+      if (t["dir"] == "in") {
+        inc += a;
+      } else {
+        exp += a;
+        cats[t["cat"]] = (cats[t["cat"]] ?? 0) + a;
+      }
+    }
+    final catList = cats.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("Moliya · Bank hisob-kitob"),
+        backgroundColor: const Color(0xFF0B1220),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _addManual,
+        backgroundColor: const Color(0xFF31C9FF),
+        icon: const Icon(Icons.add, color: Colors.black),
+        label: const Text("Qo'lda", style: TextStyle(color: Colors.black)),
+      ),
+      body: ListView(children: [
+        Container(
+          margin: const EdgeInsets.all(14),
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: const Color(0xFF111826),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text("Shu oy (${now.month}/${now.year})",
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            const SizedBox(height: 12),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text("Kirim",
+                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+                Text("+${_money(inc)}",
+                    style: const TextStyle(
+                        color: Color(0xFF2BF5C0),
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700)),
+              ]),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text("Chiqim",
+                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+                Text("-${_money(exp)}",
+                    style: const TextStyle(
+                        color: Color(0xFFFF6B6B),
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700)),
+              ]),
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text("Balans",
+                    style: TextStyle(color: Colors.white38, fontSize: 11)),
+                Text(_money(inc - exp),
+                    style: const TextStyle(
+                        color: Color(0xFF31C9FF),
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700)),
+              ]),
+            ]),
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: _busy ? null : _import,
+              icon: const Icon(Icons.sms),
+              label: Text(_busy ? "..." : "SMS'dan yangilash"),
+            ),
+          ),
+        ),
+        if (_msg.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            child: Text(_msg,
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+          ),
+        if (catList.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 8, 18, 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("Kategoriyalar (chiqim)",
+                    style: TextStyle(color: Colors.white54, fontSize: 12)),
+                const SizedBox(height: 6),
+                for (final e in catList)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(e.key,
+                            style: const TextStyle(color: Colors.white)),
+                        Text("${_money(e.value)} so'm",
+                            style: const TextStyle(color: Colors.white70)),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(18, 14, 18, 4),
+          child: Text("Amaliyotlar",
+              style: TextStyle(color: Colors.white54, fontSize: 12)),
+        ),
+        if (_txns.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(24),
+            child: Center(
+              child: Text(
+                  "SMS'dan yangilang yoki qo'lda qo'shing.\nBank xabarlari avtomatik o'qiladi va ajratiladi.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white38)),
+            ),
+          ),
+        for (final t in _txns.take(100))
+          ListTile(
+            dense: true,
+            leading: Icon(
+                t["dir"] == "in" ? Icons.south_west : Icons.north_east,
+                color: t["dir"] == "in"
+                    ? const Color(0xFF2BF5C0)
+                    : const Color(0xFFFF6B6B)),
+            title: Text((t["cat"] ?? "").toString(),
+                style: const TextStyle(color: Colors.white)),
+            subtitle: Text(
+              "${_fmtDate(t["ts"] as int)}  ·  ${t["bank"] ?? ""}",
+              style: const TextStyle(color: Colors.white38, fontSize: 11),
+            ),
+            trailing: Text(
+              "${t["dir"] == "in" ? "+" : "-"}${_money((t["amount"] as num).toDouble())}",
+              style: TextStyle(
+                  color: t["dir"] == "in"
+                      ? const Color(0xFF2BF5C0)
+                      : const Color(0xFFFF6B6B),
+                  fontWeight: FontWeight.w600),
+            ),
+          ),
+        const SizedBox(height: 24),
       ]),
     );
   }
