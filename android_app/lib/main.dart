@@ -2017,6 +2017,22 @@ class _FinancePageState extends State<FinancePage> {
     );
   }
 
+  Color _catColor(String cat) {
+    const map = {
+      "Transport": Color(0xFF31C9FF),
+      "Marketplace": Color(0xFFB388FF),
+      "Ovqatlanish": Color(0xFFFFB74D),
+      "Oziq-ovqat": Color(0xFF2BF5C0),
+      "Aloqa": Color(0xFF64B5F6),
+      "Kommunal": Color(0xFF4DB6AC),
+      "Ko'ngilochar": Color(0xFFFF8A65),
+      "Sog'liq": Color(0xFFF06292),
+      "O'tkazma": Color(0xFF9575CD),
+      "Xaridlar": Color(0xFFFF6B6B),
+    };
+    return map[cat] ?? const Color(0xFFFF6B6B);
+  }
+
   String _fmtDate(int ms) {
     final d = DateTime.fromMillisecondsSinceEpoch(ms);
     String two(int x) => x < 10 ? "0$x" : "$x";
@@ -2171,14 +2187,32 @@ class _FinancePageState extends State<FinancePage> {
                 const SizedBox(height: 6),
                 for (final e in catList)
                   Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(e.key,
-                            style: const TextStyle(color: Colors.white)),
-                        Text("${_money(e.value)} so'm",
-                            style: const TextStyle(color: Colors.white70)),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(e.key,
+                                style: const TextStyle(color: Colors.white)),
+                            Text(
+                                "${_money(e.value)} so'm  ·  ${exp > 0 ? (e.value / exp * 100).round() : 0}%",
+                                style: const TextStyle(color: Colors.white70)),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value:
+                                exp > 0 ? (e.value / exp).clamp(0.0, 1.0) : 0,
+                            minHeight: 6,
+                            backgroundColor: const Color(0xFF1E2A3F),
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                                _catColor(e.key)),
+                          ),
+                        ),
                       ],
                     ),
                   ),
