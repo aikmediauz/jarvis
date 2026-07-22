@@ -20,5 +20,7 @@ dependencies:
   path_provider: ^2.1.4
   another_telephony: ^0.4.1
   notification_listener_service: ^1.0.0
+  porcupine_flutter: ^3.0.2
+
 flutter:
   uses-material-design: true

@@ -17,6 +17,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:another_telephony/telephony.dart';
 import 'package:notification_listener_service/notification_listener_service.dart';
 import 'package:notification_listener_service/notification_event.dart';
+import 'package:porcupine_flutter/porcupine_manager.dart';
+import 'package:porcupine_flutter/porcupine_error.dart';
 import 'dart:io';
 
 void main() => runApp(const JarvisApp());
@@ -97,6 +99,56 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   final _textCtl = TextEditingController();
   String _userText = "";
   String _botText = "Salom! Men JARVIS. Sharni bosib TURIB gapiring, qo'yvorsangiz bajaraman. Yoki pastdan yozing.";
+  String _picoKey = "";
+  bool _hotwordEnabled = false;
+  PorcupineManager? _porcupineManager;
+
+  Future<void> _initPorcupine() async {
+    if (!_hotwordEnabled || _picoKey.trim().isEmpty) {
+      try {
+        await _porcupineManager?.stop();
+        await _porcupineManager?.delete();
+      } catch (_) {}
+      _porcupineManager = null;
+      return;
+    }
+    try {
+      var mic = await Permission.microphone.status;
+      if (!mic.isGranted) {
+        mic = await Permission.microphone.request();
+      }
+      if (!mic.isGranted) return;
+
+      await _porcupineManager?.stop();
+      await _porcupineManager?.delete();
+
+      _porcupineManager = await PorcupineManager.fromBuiltInKeywords(
+        _picoKey.trim(),
+        [PorcupineKeyword.JARVIS],
+        (int keywordIndex) {
+          if (keywordIndex == 0) {
+            _onHotwordDetected();
+          }
+        },
+      );
+      await _porcupineManager?.start();
+    } catch (e) {
+      debugPrint("Porcupine error: $e");
+    }
+  }
+
+  void _onHotwordDetected() {
+    if (!mounted) return;
+    try {
+      const intent = AndroidIntent(
+        action: 'action_main',
+        flags: <int>[Flag.FLAG_ACTIVITY_NEW_TASK, Flag.FLAG_ACTIVITY_REORDER_TO_FRONT],
+      );
+      intent.launch();
+    } catch (_) {}
+    _handsFree = true;
+    _startListening();
+  }
 
   @override
   void initState() {
@@ -266,8 +318,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     _cloudVoice = p.getBool("cloud_voice") ?? true;
     _wakeMode = p.getBool("wake_mode") ?? false;
     _lockEnabled = p.getBool("lock_enabled") ?? false;
+    _picoKey = p.getString("picovoice_key") ?? "";
+    _hotwordEnabled = p.getBool("hotword_enabled") ?? false;
     _unlocked = !_lockEnabled;
     if (mounted) setState(() {});
+    _initPorcupine();
     if (_lockEnabled) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _tryUnlock());
       return;
@@ -276,6 +331,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       WidgetsBinding.instance.addPostFrameCallback((_) => _settings());
     }
   }
+
 
   // --- Hisob-kitob (pullik ilovalar / obunalar) ---
   Future<void> _loadSubs() async {
@@ -972,90 +1028,122 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   void _settings() {
     final kc = TextEditingController(text: _key);
+    final pkc = TextEditingController(text: _picoKey);
     showDialog(
       context: context,
       builder: (c) => StatefulBuilder(
         builder: (c, setD) => AlertDialog(
           backgroundColor: const Color(0xFF111826),
           title: const Text("Sozlamalar"),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(
-              controller: kc,
-              decoration: const InputDecoration(
-                  labelText: "Gemini API key", hintText: "AIza..."),
-            ),
-            const SizedBox(height: 6),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              title: const Text("Bulut ovozi (erkak)", style: TextStyle(fontSize: 13)),
-              subtitle: Text(_cloudVoice ? "Yoniq - $_voice" : "O'chiq (telefon ovozi)",
-                  style: const TextStyle(fontSize: 11, color: Colors.white38)),
-              value: _cloudVoice,
-              onChanged: (v) async {
-                final p = await SharedPreferences.getInstance();
-                await p.setBool("cloud_voice", v);
-                setState(() => _cloudVoice = v);
-                setD(() {});
-              },
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              title: const Text("\"Jarvis\" bilan chaqirish", style: TextStyle(fontSize: 13)),
-              subtitle: const Text("Shovqinda faqat 'Jarvis...' ga javob beradi",
-                  style: TextStyle(fontSize: 11, color: Colors.white38)),
-              value: _wakeMode,
-              onChanged: (v) async {
-                final p = await SharedPreferences.getInstance();
-                await p.setBool("wake_mode", v);
-                setState(() => _wakeMode = v);
-                setD(() {});
-              },
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-              title: const Text("Ilova qulfi (yuz/barmoq/parol)", style: TextStyle(fontSize: 13)),
-              subtitle: const Text("Ochilganda telefon qulfini so'raydi",
-                  style: TextStyle(fontSize: 11, color: Colors.white38)),
-              value: _lockEnabled,
-              onChanged: (v) async {
-                final p = await SharedPreferences.getInstance();
-                await p.setBool("lock_enabled", v);
-                setState(() {
-                  _lockEnabled = v;
-                  _unlocked = true;
-                });
-                setD(() {});
-              },
-            ),
-            Row(children: [
-              Expanded(
-                child: TextButton.icon(
-                  onPressed: () => _speak("Salom, men JARVIS. Ovoz sinovi."),
-                  icon: const Icon(Icons.volume_up, size: 18),
-                  label: const Text("Sinash"),
-                ),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(
+                controller: kc,
+                decoration: const InputDecoration(
+                    labelText: "Gemini API key", hintText: "AIza..."),
               ),
-              Expanded(
-                child: TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(c);
-                    _voicePicker();
-                  },
-                  icon: const Icon(Icons.record_voice_over, size: 18),
-                  label: const Text("Ovoz"),
-                ),
+              const SizedBox(height: 6),
+              TextField(
+                controller: pkc,
+                decoration: const InputDecoration(
+                    labelText: "Picovoice AccessKey", hintText: "console.picovoice.ai kaliti..."),
               ),
+              const Padding(
+                padding: EdgeInsets.only(top: 4, bottom: 6),
+                child: Text("Porcupine doimiy chaqiruvi uchun console.picovoice.ai saytidan bepul AccessKey kiritishingiz lozim.",
+                    style: TextStyle(fontSize: 10, color: Colors.white38)),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text("Doimiy 'Hey Jarvis' chaqiruvi (Porcupine)", style: TextStyle(fontSize: 13)),
+                subtitle: Text(_hotwordEnabled ? (_picoKey.isEmpty ? "Kalit kiritilmagan (tayyor)" : "Yoniq ('Jarvis')") : "O'chiq",
+                    style: const TextStyle(fontSize: 11, color: Colors.white38)),
+                value: _hotwordEnabled,
+                onChanged: (v) async {
+                  final p = await SharedPreferences.getInstance();
+                  await p.setBool("hotword_enabled", v);
+                  setState(() => _hotwordEnabled = v);
+                  setD(() {});
+                },
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text("Bulut ovozi (erkak)", style: TextStyle(fontSize: 13)),
+                subtitle: Text(_cloudVoice ? "Yoniq - $_voice" : "O'chiq (telefon ovozi)",
+                    style: const TextStyle(fontSize: 11, color: Colors.white38)),
+                value: _cloudVoice,
+                onChanged: (v) async {
+                  final p = await SharedPreferences.getInstance();
+                  await p.setBool("cloud_voice", v);
+                  setState(() => _cloudVoice = v);
+                  setD(() {});
+                },
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text("\"Jarvis\" bilan chaqirish", style: TextStyle(fontSize: 13)),
+                subtitle: const Text("Shovqinda faqat 'Jarvis...' ga javob beradi",
+                    style: TextStyle(fontSize: 11, color: Colors.white38)),
+                value: _wakeMode,
+                onChanged: (v) async {
+                  final p = await SharedPreferences.getInstance();
+                  await p.setBool("wake_mode", v);
+                  setState(() => _wakeMode = v);
+                  setD(() {});
+                },
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text("Ilova qulfi (yuz/barmoq/parol)", style: TextStyle(fontSize: 13)),
+                subtitle: const Text("Ochilganda telefon qulfini so'raydi",
+                    style: TextStyle(fontSize: 11, color: Colors.white38)),
+                value: _lockEnabled,
+                onChanged: (v) async {
+                  final p = await SharedPreferences.getInstance();
+                  await p.setBool("lock_enabled", v);
+                  setState(() {
+                    _lockEnabled = v;
+                    _unlocked = true;
+                  });
+                  setD(() {});
+                },
+              ),
+              Row(children: [
+                Expanded(
+                  child: TextButton.icon(
+                    onPressed: () => _speak("Salom, men JARVIS. Ovoz sinovi."),
+                    icon: const Icon(Icons.volume_up, size: 18),
+                    label: const Text("Sinash"),
+                  ),
+                ),
+                Expanded(
+                  child: TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(c);
+                      _voicePicker();
+                    },
+                    icon: const Icon(Icons.record_voice_over, size: 18),
+                    label: const Text("Ovoz"),
+                  ),
+                ),
+              ]),
             ]),
-          ]),
+          ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(c), child: const Text("Bekor")),
             ElevatedButton(
-              onPressed: () {
-                _saveKey(kc.text.trim());
-                Navigator.pop(c);
+              onPressed: () async {
+                final pk = pkc.text.trim();
+                final p = await SharedPreferences.getInstance();
+                await p.setString("picovoice_key", pk);
+                setState(() => _picoKey = pk);
+                await _saveKey(kc.text.trim());
+                _initPorcupine();
+                if (mounted) Navigator.pop(c);
               },
               child: const Text("Saqlash"),
             ),
@@ -1064,6 +1152,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       ),
     );
   }
+
 
   String get _statusLabel {
     switch (_state) {
