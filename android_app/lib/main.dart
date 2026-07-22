@@ -50,6 +50,61 @@ const systemPrompt =
 
 enum JState { idle, listening, thinking, speaking }
 
+String jarvisCategory(String b, String dir) {
+  if (dir == "in") return "Kirim";
+  bool has(List<String> ks) => ks.any((k) => b.contains(k));
+  if (has([
+    "taksi", "taxi", "yandex go", "yandexgo", "yango", "bolt", "uklon",
+    "mytaxi", "my taxi", "fasten", "uber", "indriver", "indrive",
+    "benzin", "zapravka", "neft", "metro", "parking", "avtobus"
+  ])) {
+    return "Transport";
+  }
+  if (has([
+    "uzum", "wildberries", "wb.ru", "aliexpress", "ozon", "olcha",
+    "asaxiy", "mediapark", "texnomart", "zoodmall", "alif", "temu"
+  ])) {
+    return "Marketplace";
+  }
+  if (has([
+    "wolt", "express24", "express 24", "glovo", "bringo", "chopar",
+    "kafe", "cafe", "restoran", "kfc", "evos", "oqtepa", "food",
+    "maxway", "max way", "bellissimo", "les ailes"
+  ])) {
+    return "Ovqatlanish";
+  }
+  if (has([
+    "market", "magazin", "supermarket", "korzinka", "makro", "havas",
+    "oziq", "bozor"
+  ])) {
+    return "Oziq-ovqat";
+  }
+  if (has([
+    "uzmobile", "beeline", "ucell", "mobiuz", "humans", "internet",
+    "aloqa", "perfectum", "uztelecom"
+  ])) {
+    return "Aloqa";
+  }
+  if (has([
+    "kommunal", "gaz", "suv", "svet", "hudud", "elektr", "issiqlik"
+  ])) {
+    return "Kommunal";
+  }
+  if (has([
+    "netflix", "spotify", "youtube", "kinopoisk", "premier", "megogo",
+    "steam", "google play", "playmarket", "app store", "appstore"
+  ])) {
+    return "Ko'ngilochar";
+  }
+  if (has(["apteka", "dori", "clinic", "shifo", "poliklinika"])) {
+    return "Sog'liq";
+  }
+  if (has(["perevod", "p2p", "otkazma", "transfer", "pul o'tkaz"])) {
+    return "O'tkazma";
+  }
+  return "Xaridlar";
+}
+
 class JarvisApp extends StatelessWidget {
   const JarvisApp({super.key});
   @override
@@ -477,21 +532,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final isIn = inKw.any((k) => b.contains(k));
     final isOut = outKw.any((k) => b.contains(k));
     final dir = isIn && !isOut ? "in" : "out";
-    String cat = dir == "in" ? "Kirim" : "Xaridlar";
-    if (dir == "out") {
-      if (["taksi", "taxi", "yandex", "bolt", "uklon"].any((k) => b.contains(k))) {
-        cat = "Transport";
-      } else if (["market", "magazin", "korzinka", "makro", "havas"]
-          .any((k) => b.contains(k))) {
-        cat = "Oziq-ovqat";
-      } else if (["uzmobile", "beeline", "ucell", "mobiuz", "internet"]
-          .any((k) => b.contains(k))) {
-        cat = "Aloqa";
-      } else if (["perevod", "p2p", "transfer", "click", "payme"]
-          .any((k) => b.contains(k))) {
-        cat = "O'tkazma";
-      }
-    }
+    final cat = jarvisCategory(b, dir);
     return {
       "ts": ts,
       "amount": amount,
@@ -1797,30 +1838,7 @@ class _FinancePageState extends State<FinancePage> {
   String _money(double v) =>
       v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
 
-  String _categorize(String b, String dir) {
-    if (dir == "in") return "Kirim";
-    bool has(List<String> ks) => ks.any((k) => b.contains(k));
-    if (has(["market", "magazin", "supermarket", "korzinka", "makro", "havas", "oziq"])) {
-      return "Oziq-ovqat";
-    }
-    if (has(["taksi", "taxi", "yandex", "bolt", "benzin", "zapravka", "neft"])) {
-      return "Transport";
-    }
-    if (has(["kafe", "cafe", "restoran", "kfc", "evos", "oqtepa", "food"])) {
-      return "Ovqatlanish";
-    }
-    if (has(["uzmobile", "beeline", "ucell", "mobiuz", "humans", "internet", "aloqa"])) {
-      return "Aloqa";
-    }
-    if (has(["kommunal", "gaz", "suv", "svet", "hudud", "elektr"])) {
-      return "Kommunal";
-    }
-    if (has(["perevod", "p2p", "otkazma", "transfer", "click", "payme", "paynet"])) {
-      return "O'tkazma";
-    }
-    if (has(["apteka", "dori", "clinic", "shifo"])) return "Sog'liq";
-    return "Xaridlar";
-  }
+  String _categorize(String b, String dir) => jarvisCategory(b, dir);
 
   double? _num(String s) {
     var g = s.replaceAll(RegExp(r"[  ]"), "");
