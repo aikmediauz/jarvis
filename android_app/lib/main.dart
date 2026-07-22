@@ -14,6 +14,7 @@ import 'package:android_intent_plus/android_intent.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:another_telephony/telephony.dart';
 import 'package:notification_listener_service/notification_listener_service.dart';
 import 'package:notification_listener_service/notification_event.dart';
@@ -499,6 +500,71 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       "bank": bank,
       "raw": body
     };
+  }
+
+  Future<void> _pickImage() async {
+    try {
+      final picker = ImagePicker();
+      final XFile? x =
+          await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+      if (x == null) return;
+      final bytes = await x.readAsBytes();
+      final name = x.name.toLowerCase();
+      final mime = x.mimeType ??
+          (name.endsWith(".png")
+              ? "image/png"
+              : name.endsWith(".webp")
+                  ? "image/webp"
+                  : "image/jpeg");
+      await _sendImage(bytes, mime);
+    } catch (e) {
+      setState(() => _botText = "Rasm ochilmadi: $e");
+    }
+  }
+
+  void _pushI(String role, String text, String img) {
+    setState(() => _chat.add({"role": role, "text": text, "img": img}));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.animateTo(_scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+      }
+    });
+  }
+
+  Future<void> _sendImage(Uint8List bytes, String mime) async {
+    final b64 = base64Encode(bytes);
+    final caption = _textCtl.text.trim();
+    _textCtl.clear();
+    _pushI("user", caption, b64);
+    _set(JState.thinking);
+    final turn = <String, dynamic>{
+      "role": "user",
+      "parts": [
+        {
+          "inlineData": {"mimeType": mime, "data": b64}
+        },
+        {
+          "text": caption.isEmpty
+              ? "Bu rasmni o'qib javob ber. Agar bu chek yoki bank hisoboti bo'lsa, undagi barcha xarajat/kirimlarni {\"action\":\"add_txns\",\"items\":[...]} bilan yoz."
+              : caption
+        }
+      ]
+    };
+    String reply;
+    try {
+      reply = await _geminiAudio(turn);
+    } catch (e) {
+      reply = "Kechirasiz, xato: $e";
+    }
+    _history.add({
+      "role": "user",
+      "parts": [
+        {"text": caption.isEmpty ? "(rasm yubordim)" : caption}
+      ]
+    });
+    _trimHistory();
+    await _afterReply(reply);
   }
 
   void _push(String role, String text) {
@@ -1244,9 +1310,25 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                                 bottomRight: Radius.circular(me ? 4 : 16),
                               ),
                             ),
-                            child: Text(m["text"] ?? "",
-                                style: const TextStyle(
-                                    color: Colors.white, fontSize: 15)),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if ((m["img"] ?? "").isNotEmpty)
+                                  ClipRRect(
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: Image.memory(
+                                          base64Decode(m["img"]!),
+                                          fit: BoxFit.cover)),
+                                if ((m["text"] ?? "").isNotEmpty)
+                                  Padding(
+                                    padding: EdgeInsets.only(
+                                        top: (m["img"] ?? "").isNotEmpty ? 6 : 0),
+                                    child: Text(m["text"] ?? "",
+                                        style: const TextStyle(
+                                            color: Colors.white, fontSize: 15)),
+                                  ),
+                              ],
+                            ),
                           ),
                         );
                       },
@@ -1276,6 +1358,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
               color: const Color(0xFF0A0E17),
               child: Row(children: [
+                IconButton(
+                  onPressed: _pickImage,
+                  icon: const Icon(Icons.add_photo_alternate_outlined,
+                      color: Colors.white70),
+                ),
                 Expanded(
                   child: TextField(
                     controller: _textCtl,
