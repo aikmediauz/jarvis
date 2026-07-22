@@ -2017,6 +2017,47 @@ class _FinancePageState extends State<FinancePage> {
     );
   }
 
+  void _editCat(Map<String, dynamic> t) {
+    const cats = [
+      "Transport", "Marketplace", "Ovqatlanish", "Oziq-ovqat", "Aloqa",
+      "Kommunal", "Ko'ngilochar", "Sog'liq", "O'tkazma", "Xaridlar", "Kirim"
+    ];
+    showDialog(
+      context: context,
+      builder: (c) => AlertDialog(
+        backgroundColor: const Color(0xFF111826),
+        title: const Text("Kategoriya tanlang",
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final k in cats)
+                ListTile(
+                  dense: true,
+                  title:
+                      Text(k, style: const TextStyle(color: Colors.white)),
+                  trailing: t["cat"] == k
+                      ? const Icon(Icons.check, color: Color(0xFF31C9FF))
+                      : null,
+                  onTap: () {
+                    setState(() => t["cat"] = k);
+                    _save();
+                    Navigator.pop(c);
+                  },
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c), child: const Text("Bekor")),
+        ],
+      ),
+    );
+  }
+
   Color _catColor(String cat) {
     const map = {
       "Transport": Color(0xFF31C9FF),
@@ -2236,6 +2277,7 @@ class _FinancePageState extends State<FinancePage> {
           ),
         for (final t in _txns.take(100))
           ListTile(
+            onTap: () => _editCat(t),
             dense: true,
             leading: Icon(
                 t["dir"] == "in" ? Icons.south_west : Icons.north_east,
