@@ -141,9 +141,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         setState(() => _unlocked = true);
         if (_key.isEmpty) {
           _settings();
-        } else {
-          _handsFree = true;
-          _startListening();
         }
       }
     } catch (e) {
@@ -161,11 +158,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   }
 
   void _afterSpeak() {
-    if (_handsFree) {
-      _startListening();
-    } else {
-      _set(JState.idle);
-    }
+    _set(JState.idle);
   }
 
   // --- Gemini bulut TTS: matnni erkak ovozda audio qilib qaytaradi ---
@@ -385,10 +378,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     final p = await SharedPreferences.getInstance();
     await p.setString("gemini_key", k);
     if (mounted) setState(() => _key = k);
-    if (k.isNotEmpty) {
-      _handsFree = true;
-      _startListening();
-    }
   }
 
   Future<void> _selectVoice(String name) async {
