@@ -578,6 +578,63 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     });
   }
 
+  void _pushA(String role, String text, String audio) {
+    setState(() => _chat.add({"role": role, "text": text, "audio": audio}));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.animateTo(_scroll.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 250), curve: Curves.easeOut);
+      }
+    });
+  }
+
+  Future<void> _playAudio(String path) async {
+    try {
+      await _tts.stop();
+      await _audio.stop();
+      await _audio.play(DeviceFileSource(path));
+    } catch (e) {
+      setState(() => _botText = "Ovoz ijro etilmadi: $e");
+    }
+  }
+
+  Future<void> _editMessage(int index) async {
+    final ctl = TextEditingController(text: _chat[index]["text"] ?? "");
+    final res = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF141B2A),
+        title: const Text("Xabarni tahrirlash",
+            style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          minLines: 1,
+          maxLines: 5,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: "Matn...",
+            hintStyle: TextStyle(color: Colors.white30),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Bekor", style: TextStyle(color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, ctl.text.trim()),
+            child: const Text("Saqlash",
+                style: TextStyle(color: Color(0xFF31C9FF))),
+          ),
+        ],
+      ),
+    );
+    if (res != null && res.isNotEmpty) {
+      setState(() => _chat[index]["text"] = res);
+    }
+  }
+
   void _set(JState s) {
     if (mounted) setState(() => _state = s);
   }
@@ -760,8 +817,17 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             "Eshitmadim (yozildi: ${pcm.length} bayt). Mikrofonni bosib, biroz uzunroq gapiring.");
         return;
       }
-      _push("user", "🎤 Ovozli xabar");
-      final wav = _pcmToWav(pcm, 16000);
+final wav = _pcmToWav(pcm, 16000);
+      String savedPath = "";
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        savedPath =
+            "${docs.path}/voice_${DateTime.now().millisecondsSinceEpoch}.wav";
+        await File(savedPath).writeAsBytes(wav);
+      } catch (_) {
+        savedPath = "";
+      }
+      _pushA("user", "🎤 Ovozli xabar", savedPath);
       final b64 = base64Encode(wav);
       final audioTurn = <String, dynamic>{
         "role": "user",
@@ -1292,42 +1358,68 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         return Align(
                           alignment:
                               me ? Alignment.centerRight : Alignment.centerLeft,
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(vertical: 4),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 14, vertical: 10),
-                            constraints: BoxConstraints(
-                                maxWidth:
-                                    MediaQuery.of(context).size.width * 0.78),
-                            decoration: BoxDecoration(
-                              color: me
-                                  ? const Color(0xFF1E6BFF)
-                                  : const Color(0xFF141B2A),
-                              borderRadius: BorderRadius.only(
-                                topLeft: const Radius.circular(16),
-                                topRight: const Radius.circular(16),
-                                bottomLeft: Radius.circular(me ? 16 : 4),
-                                bottomRight: Radius.circular(me ? 4 : 16),
+                          child: GestureDetector(
+                            onLongPress: (me &&
+                                    (m["audio"] ?? "").isEmpty &&
+                                    (m["text"] ?? "").isNotEmpty)
+                                ? () => _editMessage(i)
+                                : null,
+                            child: Container(
+                              margin: const EdgeInsets.symmetric(vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 10),
+                              constraints: BoxConstraints(
+                                  maxWidth:
+                                      MediaQuery.of(context).size.width * 0.78),
+                              decoration: BoxDecoration(
+                                color: me
+                                    ? const Color(0xFF1E6BFF)
+                                    : const Color(0xFF141B2A),
+                                borderRadius: BorderRadius.only(
+                                  topLeft: const Radius.circular(16),
+                                  topRight: const Radius.circular(16),
+                                  bottomLeft: Radius.circular(me ? 16 : 4),
+                                  bottomRight: Radius.circular(me ? 4 : 16),
+                                ),
                               ),
-                            ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if ((m["img"] ?? "").isNotEmpty)
-                                  ClipRRect(
-                                      borderRadius: BorderRadius.circular(10),
-                                      child: Image.memory(
-                                          base64Decode(m["img"]!),
-                                          fit: BoxFit.cover)),
-                                if ((m["text"] ?? "").isNotEmpty)
-                                  Padding(
-                                    padding: EdgeInsets.only(
-                                        top: (m["img"] ?? "").isNotEmpty ? 6 : 0),
-                                    child: Text(m["text"] ?? "",
-                                        style: const TextStyle(
-                                            color: Colors.white, fontSize: 15)),
-                                  ),
-                              ],
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if ((m["img"] ?? "").isNotEmpty)
+                                    ClipRRect(
+                                        borderRadius: BorderRadius.circular(10),
+                                        child: Image.memory(
+                                            base64Decode(m["img"]!),
+                                            fit: BoxFit.cover)),
+                                  if ((m["audio"] ?? "").isNotEmpty)
+                                    InkWell(
+                                      onTap: () => _playAudio(m["audio"]!),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: const [
+                                          Icon(Icons.play_circle_fill,
+                                              color: Colors.white, size: 26),
+                                          SizedBox(width: 8),
+                                          Text("Ovozli xabar",
+                                              style: TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 14)),
+                                        ],
+                                      ),
+                                    )
+                                  else if ((m["text"] ?? "").isNotEmpty)
+                                    Padding(
+                                      padding: EdgeInsets.only(
+                                          top: (m["img"] ?? "").isNotEmpty
+                                              ? 6
+                                              : 0),
+                                      child: Text(m["text"] ?? "",
+                                          style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 15)),
+                                    ),
+                                ],
+                              ),
                             ),
                           ),
                         );
