@@ -326,6 +326,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         " hisob-kitob/obunalar/xarajat oynasini ochish uchun {\"action\":\"expenses\"} .");
     b.write(
         " moliya/bank karta kirim-chiqim va xarajat statistikasi uchun {\"action\":\"finance\"} .");
+    b.write(
+        " Agar foydalanuvchi xarajat yoki kirim aytsa, yoki bank hisoboti (vypiska) matnini joylashtirsa, ularni yoz: {\"action\":\"add_txns\",\"items\":[{\"amount\":50000,\"dir\":\"out\",\"cat\":\"Transport\",\"desc\":\"taksi\"}]} . dir faqat in yoki out. Bir nechta amaliyot bo'lsa hammasini items ichiga sol. Bunda boshqa matn yozma, faqat shu JSON. ");
     final fin = _financeSummary();
     if (fin.isNotEmpty) {
       b.write(" FOYDALANUVCHI OBUNALARI (pullik ilovalar): ");
@@ -801,6 +803,55 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             MaterialPageRoute(builder: (_) => const FinancePage()));
         await _loadTxns();
         return;
+      case "add_txns":
+        {
+          final items = a["items"];
+          int n = 0;
+          if (items is List) {
+            final p = await SharedPreferences.getInstance();
+            final raw = p.getString("txns");
+            final list = <Map<String, dynamic>>[];
+            if (raw != null) {
+              try {
+                final d = jsonDecode(raw);
+                if (d is List) {
+                  for (final x in d) {
+                    list.add(Map<String, dynamic>.from(x));
+                  }
+                }
+              } catch (_) {}
+            }
+            final now = DateTime.now().millisecondsSinceEpoch;
+            for (final it in items) {
+              try {
+                final m = Map<String, dynamic>.from(it);
+                final amt = (m["amount"] is num)
+                    ? (m["amount"] as num).toDouble()
+                    : double.tryParse(
+                            "${m["amount"]}".replaceAll(RegExp(r"[^0-9.]"), "")) ??
+                        0;
+                if (amt <= 0) continue;
+                list.insert(0, {
+                  "ts": now,
+                  "amount": amt,
+                  "dir": (m["dir"] == "in") ? "in" : "out",
+                  "cat": (m["cat"] ??
+                          (m["dir"] == "in" ? "Kirim" : "Xaridlar"))
+                      .toString(),
+                  "bank": "AI",
+                  "raw": (m["desc"] ?? "").toString(),
+                });
+                n++;
+              } catch (_) {}
+            }
+            await p.setString("txns", jsonEncode(list));
+            await _loadTxns();
+          }
+          _push("bot", "$n ta amaliyot Moliyaga yozildi.");
+          setState(() => _botText = "$n ta amaliyot yozildi.");
+          _set(JState.idle);
+          return;
+        }
       case "call":
         uri = Uri.parse("tel:${a["number"]}");
         say = "${a["number"]} raqamiga qo'ng'iroq ochyapman.";
