@@ -543,11 +543,45 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     };
   }
 
-  Future<void> _pickImage() async {
+  void _attachSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF141B2A),
+      builder: (c) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined,
+                  color: Colors.white70),
+              title: const Text("Galereyadan rasm",
+                  style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(c);
+                _pickImage(ImageSource.gallery);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined,
+                  color: Colors.white70),
+              title: const Text("Kamera (chekni suratga olish)",
+                  style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(c);
+                _pickImage(ImageSource.camera);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
     try {
       final picker = ImagePicker();
       final XFile? x =
-          await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+          await picker.pickImage(source: source, imageQuality: 70);
       if (x == null) return;
       final bytes = await x.readAsBytes();
       final name = x.name.toLowerCase();
@@ -1492,7 +1526,7 @@ final wav = _pcmToWav(pcm, 16000);
               color: const Color(0xFF0A0E17),
               child: Row(children: [
                 IconButton(
-                  onPressed: _pickImage,
+                  onPressed: _attachSheet,
                   icon: const Icon(Icons.add_photo_alternate_outlined,
                       color: Colors.white70),
                 ),
